@@ -1,0 +1,4 @@
+datasets/*
+PaddleSeg/*
+*vscode*
+*_pycache*
