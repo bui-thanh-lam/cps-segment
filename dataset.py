@@ -1,6 +1,9 @@
 from torch.utils.data import Dataset
-import os
 from PIL import Image
+import torchvision.transforms.functional as T
+import os
+import numpy as np
+import torch
 
 
 class SSLSegmentationDataset(Dataset):
@@ -9,15 +12,17 @@ class SSLSegmentationDataset(Dataset):
         self,
         image_dir,
         mask_dir=None,
-        transform=None,
+        input_transform=None,
         target_transform=None,
+        shared_transform=None,
         return_image_name=False,
     ):
         super().__init__()
         self.image_dir = image_dir
         self.mask_dir = mask_dir
-        self.transform = transform
+        self.input_transform = input_transform
         self.target_transform = target_transform
+        self.shared_transform = shared_transform
         self.return_image_name = return_image_name
         
         if mask_dir is None: 
@@ -43,19 +48,36 @@ class SSLSegmentationDataset(Dataset):
         chosen_image = self.image_names[index]
         with Image.open(os.path.join(self.image_dir, chosen_image)) as img:
             # transformation
-            if self.transform is not None:
-                img = self.transform(img)
+            img = np.asarray(img)
+            img = torch.FloatTensor(img).permute(2, 0, 1)
+            if self.input_transform is not None:
+                img = self.input_transform(img)
           
         if self.is_unlabelled:
-            if self.return_image_name: return img, chosen_image
-            else: return img
+            if self.shared_transform is not None:
+                raise UserWarning("shared_transform should be None for unlabelled dataset")
+            if self.return_image_name:
+                return img, chosen_image
+            else: 
+                return img
         else:
             with Image.open(os.path.join(self.mask_dir, chosen_image)) as mask:
                 # transformation
-                if self.transform is not None:
+                mask = np.asarray(mask)
+                mask = torch.LongTensor(mask)
+                if self.shared_transform is not None:
+                    example = torch.cat((img, mask.unsqueeze(0)), dim=0)
+                    example = self.shared_transform(example)
+                    img = example[:3, :, :]
+                    mask = example[-1, :, :].unsqueeze(0)
+                if self.target_transform is not None:
                     mask = self.target_transform(mask)
-            if self.return_image_name: return img, mask.long(), chosen_image
-            else: return img, mask.long()
+                    mask = mask.squeeze()
+                    mask = mask.type(torch.int64)
+            if self.return_image_name: 
+                return img, mask, chosen_image
+            else: 
+                return img, mask
 
 
     def __len__(self) -> int:

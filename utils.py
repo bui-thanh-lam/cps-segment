@@ -9,20 +9,40 @@ import numpy as np
 
 DEVICE = torch.device('cuda')
 IGNORE_INDEX = -1
-TRAIN_TRANSFORMS = T.Compose([
-    T.Resize(512),
-    T.CenterCrop(512),
-    T.ToTensor(),
+TRAIN_INPUT_TRANSFORMS = T.Compose([
+    T.ColorJitter(
+        brightness=0.2,
+        contrast=0.2,
+        hue=0.1
+    ),
     T.Normalize(
-        mean=[0.5, 0.5, 0.5],
-        std=[0.5, 0.5, 0.5]
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
     )
 ])
-TARGET_TRANSFORMS = T.Compose([
+TRAIN_SHARED_TRANSFORMS = T.Compose([
+    T.RandomResizedCrop(
+        512,
+        scale=(0.5, 2)
+    ),
+    T.RandomHorizontalFlip(),
+])
+TRAIN_TARGET_TRANSFORMS = T.Compose([
+    T.Resize((512, 512))
+])
+VAL_INPUT_TRANSFORMS = T.Compose([
+    T.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
+])
+VAL_SHARED_TRANSFORMS = T.Compose([
     T.Resize(512),
     T.CenterCrop(512),
-    T.ToTensor(),
 ])
+N_EPOCHS = 50
+LEARNING_RATE = 1e-5
+BATCH_SIZE = 16
 
 
 def convert_black_and_white_to_binary_mask(mask_dir, out_dir):

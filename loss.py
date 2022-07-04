@@ -73,22 +73,3 @@ class CombinedCPSLoss(nn.Module):
         # combine two losses
         combined_loss = (ce_loss + float(self.trade_off_factor / (self.n_models-1)) * cps_loss) / self.n_models
         return combined_loss
-
-
-class DiceLoss(nn.Module):
-    
-    def __init__(self):
-        super().__init__()
-
-    
-    def forward(self, inputs, targets, smooth=1):
-        inputs = F.softmax(inputs, dim=1)
-        # inputs = torch.max(inputs, dim=1)[0].squeeze()
-        inputs = inputs.view(-1)
-        targets = F.one_hot(targets, 2).permute(0, 3, 2, 1)
-        targets = targets.contiguous().view(-1)
-        
-        intersection = (inputs * targets).sum()                            
-        dice = (2.*intersection + smooth)/(inputs.sum() + targets.sum() + smooth)  
-        
-        return 1 - dice

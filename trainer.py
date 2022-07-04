@@ -1,11 +1,11 @@
 import torch
 import torch.nn.functional as F
-import torch.nn as nn
 import numpy as np
 from torch.utils.data import DataLoader
 from transformers import SegformerForSemanticSegmentation, SegformerConfig
+from torchgeometry.losses import DiceLoss
 
-from loss import CombinedCPSLoss, DiceLoss
+from loss import CombinedCPSLoss
 from utils import *
 from evaluate import compute_iou, compute_dice
 
@@ -19,13 +19,14 @@ class NCPSTrainer:
         n_models = 3,
         model_config: SegformerConfig = None,
         model: SegformerForSemanticSegmentation = None,
+        checkpoint_path = None,
         momentum_factor = 0,
         trade_off_factor = 1.5,
         n_labelled_examples_per_batch = 4,
-        learning_rate = 5e-5,
-        weight_decay=5e-6,
+        learning_rate = 1e-4,
+        weight_decay = 5e-6,
         use_multiple_teachers = False,
-        use_cutmix = False
+        use_cutmix = False,
     ) -> None:
         assert n_models > 1, "number of models should be larger than 1"
         self.n_models = n_models
@@ -46,21 +47,25 @@ class NCPSTrainer:
         elif model_config is not None:
             for _ in range(self.n_models):
                 self.models.append(SegformerForSemanticSegmentation(config=model_config).to(self.device))
+        elif checkpoint_path is not None:
+            self.load_from_checkpoint(checkpoint_path)
         else:
-            raise ValueError("Either model_config or model must be not None")
+            raise ValueError("Either model_config, model or checkpoint_path must be not None")
 
         for i in range(self.n_models):
             self.optims.append(torch.optim.AdamW(self.models[i].parameters(), lr=learning_rate, weight_decay=weight_decay))
 
 
     def _generate_pseudo_labels(self, input):
-        for j in range(self.n_models):
+        for j, model in enumerate(self.models):
             # output logit shape: bs * n_classes * h/4 * w/4
             # Huggingface's Segformer always downscales the output height & width by 4 times
-            p_j = self.models[j](input).logits
-            p_j = F.interpolate(p_j, scale_factor=4, mode='bicubic').unsqueeze(-1)
-            if j == 0: pseudo_labels = p_j
-            else: pseudo_labels = torch.cat((pseudo_labels, p_j), dim=-1)
+            p_j = model(input).logits
+            p_j = F.interpolate(p_j, scale_factor=4, mode='bilinear').unsqueeze(-1)
+            if j == 0: 
+                pseudo_labels = p_j
+            else: 
+                pseudo_labels = torch.cat((pseudo_labels, p_j), dim=-1)
         # shape: bs * h * w * n_models
         return pseudo_labels
 
@@ -79,7 +84,11 @@ class NCPSTrainer:
         pass
 
 
-    def fit(self, labelled_dataset, unlabelled_dataset):
+    def load_from_checkpoint(self):
+        pass
+
+
+    def fit(self, labelled_dataset, unlabelled_dataset, val_dataset=None):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.n_labelled_examples_per_batch)
         unlabelled_dataloader = DataLoader(dataset=unlabelled_dataset, batch_size=self.n_labelled_examples_per_batch)
         for epoch in range(self.n_epochs):
@@ -104,8 +113,9 @@ class NCPSTrainer:
                 for i in range(self.n_models):
                     self.optims[i].step()
                     self.optims[i].zero_grad()
-            print(f"======= Evaluate on train set =======")
-            print(self.evaluate(labelled_dataset))
+            if val_dataset is not None:
+                print(f"======= Evaluate on val set =======")
+                print(self.evaluate(val_dataset))
 
     
     def evaluate(self, val_dataset):
@@ -129,12 +139,62 @@ class NCPSTrainer:
         }
 
     
-    def save(self):
-        pass
+    def save(self, out_dir):
+        for i, model in enumerate(self.models):
+            torch.save(model.state_dict(), os.path.join(out_dir, f'segformer_semi_supervised_head_{i}.pth'))
 
 
-    def predict(self):
-        pass
+    def predict(self, test_dataset, out_dir, mode='soft_voting'):
+        assert mode in ["soft_voting", "max_confidence", "single"], "Mode must be either soft_voting, max_confidence or single"
+        assert test_dataset.return_image_name == True, "test_dataset.return_image_name must be True"
+        test_dataloader = DataLoader(dataset=test_dataset, batch_size=1)
+        with torch.no_grad():
+            if test_dataset.is_unlabelled:
+                for step, [x, image_name] in enumerate(test_dataloader):
+                    if isinstance(image_name, tuple): image_name = image_name[0]
+                    x = x.to(self.device)
+                    if mode == "single":
+                        preds = self.models[0](x).logits
+                    if mode == "max_confidence":
+                        preds = None
+                        for model in self.models:
+                            _preds = model(x).logits
+                            if preds is None: preds = _preds
+                            else:
+                                preds = torch.maximum(preds, _preds)
+                    if mode == "soft_voting":
+                        preds = None
+                        for model in self.models:
+                            _preds = model(x).logits
+                            if preds is None: preds = _preds
+                            else:
+                                preds += _preds
+                    preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                    preds = torch.argmax(preds, dim=1).squeeze()
+                    convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
+            else:
+                for step, [x, Y, image_name] in enumerate(test_dataloader):
+                    if isinstance(image_name, tuple): image_name = image_name[0]
+                    x = x.to(self.device)
+                    if mode == "single":
+                        preds = self.models[0](x).logits
+                    if mode == "max_confidence":
+                        preds = None
+                        for model in self.models:
+                            _preds = model(x).logits
+                            if preds is None: preds = _preds
+                            else:
+                                preds = torch.maximum(preds, _preds)
+                    if mode == "soft_voting":
+                        preds = None
+                        for model in self.models:
+                            _preds = model(x).logits
+                            if preds is None: preds = _preds
+                            else:
+                                preds += _preds
+                    preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                    preds = torch.argmax(preds, dim=1).squeeze()
+                    convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
 
 
 class SupervisedTrainer:
@@ -145,9 +205,10 @@ class SupervisedTrainer:
         device = DEVICE,
         model_config: SegformerConfig = None,
         model: SegformerForSemanticSegmentation = None,
-        learning_rate = 5e-5,
-        weight_decay=5e-6,
-        batch_size=16
+        checkpoint_path = None,
+        learning_rate = 1e-4,
+        weight_decay = 5e-6,
+        batch_size = 16
     ) -> None:
         self.n_epochs = n_epochs
         self.device = device
@@ -158,30 +219,33 @@ class SupervisedTrainer:
         elif model_config is not None:
             self.model_config = model_config
             self.model = SegformerForSemanticSegmentation(config=model_config).to(self.device)
+        elif checkpoint_path is not None:
+            self.load_from_checkpoint(checkpoint_path)
+        else:
+            raise ValueError("Either model_config, model or checkpoint_path must be not None")
         self.optim = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
 
 
-    def fit(self, labelled_dataset, test_dataset=None):
+    def fit(self, labelled_dataset, val_dataset=None):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.batch_size)
         for epoch in range(self.n_epochs):
             print(f"======= Epoch {epoch+1} =======")
             # criterion = DiceLoss().to(self.device)
-            criterion = nn.CrossEntropyLoss().to(self.device)
+            criterion = torch.nn.CrossEntropyLoss().to(self.device)
             for step, [x_L, Y] in enumerate(labelled_dataloader):
                 x_L = x_L.to(self.device)
                 Y = Y.squeeze().to(self.device)
                 preds = self.model(x_L).logits
-                preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
                 loss = criterion(preds, Y)
                 if step % 50 == 0:
                     print(f"{loss.item():.5f}")
                 loss.backward()
                 self.optim.step()
                 self.optim.zero_grad()
-            print(f"======= Evaluate on train set =======")
-            print(self.evaluate(labelled_dataset))
-            self.predict(test_dataset, "datasets/TestDataset/CVC-300/output/small/")
-
+            if val_dataset is not None:
+                print(f"======= Evaluate on val set =======")
+                print(self.evaluate(val_dataset))
 
 
     def evaluate(self, val_dataset):
@@ -193,7 +257,8 @@ class SupervisedTrainer:
                 x_L = x_L.to(self.device)
                 Y = Y.to(self.device).squeeze()
                 preds = self.model(x_L).logits
-                preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                if preds.shape[-1] != Y.shape[-1]:
+                    preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
                 preds = torch.argmax(preds, dim=1).squeeze()
                 iou.append(compute_iou(preds, Y))
                 dice.append(compute_dice(preds, Y))
@@ -205,18 +270,33 @@ class SupervisedTrainer:
         }
 
     
-    def save(self):
+    def save(self, out_dir):
+        torch.save(self.model, os.path.join(out_dir, 'segformer_supervised.pth'))
+
+
+    def load_from_checkpoint(self):
         pass
 
 
     def predict(self, test_dataset, out_dir):
+        assert test_dataset.return_image_name == True, "test_dataset.return_image_name must be True"
         test_dataloader = DataLoader(dataset=test_dataset, batch_size=1)
         with torch.no_grad():
-            for step, [x_L, Y, image_name] in enumerate(test_dataloader):
-                image_name = image_name[0]
-                x_L = x_L.to(self.device)
-                Y = Y.to(self.device).squeeze()
-                preds = self.model(x_L).logits
-                preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
-                preds = torch.argmax(preds, dim=1).squeeze()
-                convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
+            if test_dataset.is_unlabelled:
+                for step, [x, image_name] in enumerate(test_dataloader):
+                    if isinstance(image_name, tuple): image_name = image_name[0]
+                    x = x.to(self.device)
+                    preds = self.model(x).logits
+                    if preds.shape[-1] != Y.shape[-1]:
+                        preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                    preds = torch.argmax(preds, dim=1).squeeze()
+                    convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
+            else:
+                for step, [x, Y, image_name] in enumerate(test_dataloader):
+                    if isinstance(image_name, tuple): image_name = image_name[0]
+                    x = x.to(self.device)
+                    preds = self.model(x).logits
+                    if preds.shape[-1] != Y.shape[-1]:
+                        preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                    preds = torch.argmax(preds, dim=1).squeeze()
+                    convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
