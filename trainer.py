@@ -1,3 +1,4 @@
+import random
 import torch
 import torch.nn.functional as F
 import numpy as np
@@ -27,12 +28,14 @@ class NCPSTrainer:
         weight_decay = 5e-6,
         use_multiple_teachers = False,
         use_cutmix = False,
+        image_size = 512,
     ) -> None:
         assert n_models > 1, "number of models should be larger than 1"
         self.n_models = n_models
         self.use_multiple_teachers = use_multiple_teachers
         self.models = []
         self.optims = []
+        self.schedulers = []
         self.model_config = model_config
         self.n_labelled_examples_per_batch = n_labelled_examples_per_batch
         self.n_epochs = n_epochs
@@ -40,6 +43,7 @@ class NCPSTrainer:
         self.momentum_factor = momentum_factor
         self.trade_off_factor = trade_off_factor
         self.device = device
+        self.image_size = 512
 
         if model is not None:
             for _ in range(self.n_models):
@@ -54,6 +58,7 @@ class NCPSTrainer:
 
         for i in range(self.n_models):
             self.optims.append(torch.optim.AdamW(self.models[i].parameters(), lr=learning_rate, weight_decay=weight_decay))
+            self.schedulers.append(torch.optim.lr_scheduler.CosineAnnealingLR(self.optims[i], T_max=5))
 
 
     def _generate_pseudo_labels(self, input):
@@ -72,12 +77,21 @@ class NCPSTrainer:
 
     def _cutmix(self, x_U_1, x_U_2):
         # init M
+        M = np.zeros_like(x_U_1)
+        area = random.uniform(0.05, 0.3) * self.image_size ** 2
+        ratio = random.uniform(0.25, 4)
+        h = int(np.sqrt(area / ratio))
+        w = int(ratio*h)
+        start_x = random.randint(self.image_size)
+        start_y = random.randint(self.image_size)
+        end_x = np.max(start_x+w, self.image_size)
+        end_y = np.max(start_x+h, self.image_size)
+        M[start_x:end_x, start_y:end_y] += 1
         # cutmix
-        pass
-
-    
-    def _multiple_teacher_correction(self, pseudo_labels):
-        pass
+        # x_U_1: shape bs * c * h * w
+        # x_U_2: shape bs * c * h * w
+        # x_m: shape bs * c * h * w
+        return M
 
 
     def _momentum_update(self):
@@ -91,28 +105,40 @@ class NCPSTrainer:
     def fit(self, labelled_dataset, unlabelled_dataset, val_dataset=None):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.n_labelled_examples_per_batch)
         unlabelled_dataloader = DataLoader(dataset=unlabelled_dataset, batch_size=self.n_labelled_examples_per_batch)
+        
+        criterion = CombinedCPSLoss(
+            n_models=self.n_models,
+            trade_off_factor=self.trade_off_factor,
+            use_cutmix=self.use_cutmix,
+            use_multiple_teachers=self.use_multiple_teachers,
+        ).to(self.device)
+        
         for epoch in range(self.n_epochs):
             print(f"======= Epoch {epoch+1} =======")
-            criterion = CombinedCPSLoss(
-                n_models=self.n_models,
-                trade_off_factor=self.trade_off_factor,
-            ).to(self.device)
             for (step, [x_L, Y]), (_, x_U) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader)):
+                
                 x_L = x_L.to(self.device)
                 x_U = x_U.to(self.device)
                 Y = Y.to(self.device)
+                
                 # gen pseudo label
                 P_L = self._generate_pseudo_labels(x_L)
                 P_U = self._generate_pseudo_labels(x_U)
+
                 # compute loss
-                loss = criterion(preds_sup=P_L, preds_unsup=P_U, targets=Y)
-                if step % 50 == 0:
-                    print(f"{loss.item():.5f}")
+                loss = criterion(preds_L=P_L, preds_U=P_U, targets=Y)
+                if step % 10 == 0:
+                    print(f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch}, step: {step}, loss: {loss.item():.5f}")
+                
                 # update teacher & student weight
                 loss.backward()
                 for i in range(self.n_models):
                     self.optims[i].step()
                     self.optims[i].zero_grad()
+            
+            for i in range(self.n_models):
+                self.schedulers[i].step()
+            
             if val_dataset is not None:
                 print(f"======= Evaluate on val set =======")
                 print(self.evaluate(val_dataset))
@@ -224,25 +250,27 @@ class SupervisedTrainer:
         else:
             raise ValueError("Either model_config, model or checkpoint_path must be not None")
         self.optim = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optim, T_max=5)
 
 
     def fit(self, labelled_dataset, val_dataset=None):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.batch_size)
+        # criterion = DiceLoss().to(self.device)
+        criterion = torch.nn.CrossEntropyLoss().to(self.device)
         for epoch in range(self.n_epochs):
             print(f"======= Epoch {epoch+1} =======")
-            # criterion = DiceLoss().to(self.device)
-            criterion = torch.nn.CrossEntropyLoss().to(self.device)
             for step, [x_L, Y] in enumerate(labelled_dataloader):
                 x_L = x_L.to(self.device)
                 Y = Y.squeeze().to(self.device)
                 preds = self.model(x_L).logits
                 preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
                 loss = criterion(preds, Y)
-                if step % 50 == 0:
-                    print(f"{loss.item():.5f}")
+                if step % 10 == 0:
+                    print(f"[INFO] [TRAIN] mode: supervised, epoch: {epoch+1}, step: {step}, loss: {loss.item():.5f}")
                 loss.backward()
                 self.optim.step()
                 self.optim.zero_grad()
+            self.scheduler.step()
             if val_dataset is not None:
                 print(f"======= Evaluate on val set =======")
                 print(self.evaluate(val_dataset))

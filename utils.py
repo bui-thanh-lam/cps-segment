@@ -7,8 +7,14 @@ import shutil
 import numpy as np
 
 
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 DEVICE = torch.device('cuda')
 IGNORE_INDEX = -1
+N_EPOCHS = 100
+LEARNING_RATE = 6e-5
+WEIGHT_DECAY = 5e-4
+BATCH_SIZE = 8
 TRAIN_INPUT_TRANSFORMS = T.Compose([
     T.ColorJitter(
         brightness=0.2,
@@ -16,8 +22,8 @@ TRAIN_INPUT_TRANSFORMS = T.Compose([
         hue=0.1
     ),
     T.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
+        mean=[0.5, 0.5, 0.5],
+        std=[0.5, 0.5, 0.5]
     )
 ])
 TRAIN_SHARED_TRANSFORMS = T.Compose([
@@ -26,23 +32,21 @@ TRAIN_SHARED_TRANSFORMS = T.Compose([
         scale=(0.5, 2)
     ),
     T.RandomHorizontalFlip(),
-])
-TRAIN_TARGET_TRANSFORMS = T.Compose([
     T.Resize((512, 512))
 ])
+# TRAIN_TARGET_TRANSFORMS = T.Compose([
+#     T.Resize((512, 512))
+# ])
+TRAIN_TARGET_TRANSFORMS = None
 VAL_INPUT_TRANSFORMS = T.Compose([
     T.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225]
+        mean=[0.5, 0.5, 0.5],
+        std=[0.5, 0.5, 0.5]
     )
 ])
 VAL_SHARED_TRANSFORMS = T.Compose([
-    T.Resize(512),
-    T.CenterCrop(512),
+    T.Resize((512, 512)),
 ])
-N_EPOCHS = 50
-LEARNING_RATE = 1e-5
-BATCH_SIZE = 16
 
 
 def convert_black_and_white_to_binary_mask(mask_dir, out_dir):
@@ -83,8 +87,27 @@ def visualize_pseudo_labels():
     pass
 
 
+def cutmix(x_U_1, x_U_2=None):
+    image_size = x_U_1.shape[-1]
+    # init M
+    M = np.zeros((image_size, image_size))
+    area = random.uniform(0.05, 0.3) * image_size ** 2
+    ratio = random.uniform(0.25, 4)
+    h = int(np.sqrt(area / ratio))
+    w = int(ratio*h)
+    start_x = random.randint(0, image_size)
+    start_y = random.randint(0, image_size)
+    end_x = image_size if start_x+w > image_size else start_x+w
+    end_y = image_size if start_y+h > image_size else start_y+h
+    M[start_x:end_x, start_y:end_y] += 1
+    # cutmix
+    # x_U_1: shape bs * c * h * w
+    # x_U_2: shape bs * c * h * w
+    # x_m: shape bs * c * h * w
+    return M
+
+
 if __name__ == "__main__":
-    for mask in os.listdir("datasets/TestDataset/CVC-300/output/small"):
-        with Image.open(os.path.join("datasets/TestDataset/CVC-300/output/small", mask)) as img:
-            img = np.asarray(img)
-            print(np.max(img))
+    x_U_1 = np.random.rand(16, 3, 512, 512)
+    M = cutmix(x_U_1)
+    print(M)

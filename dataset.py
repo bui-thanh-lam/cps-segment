@@ -4,6 +4,7 @@ import torchvision.transforms.functional as T
 import os
 import numpy as np
 import torch
+from transformers import SegformerFeatureExtractor
 
 
 class SSLSegmentationDataset(Dataset):
@@ -23,11 +24,13 @@ class SSLSegmentationDataset(Dataset):
         self.input_transform = input_transform
         self.target_transform = target_transform
         self.shared_transform = shared_transform
+        self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512")
+        self.feature_extractor.reduce_labels = False
         self.return_image_name = return_image_name
         
         if mask_dir is None: 
             self.is_unlabelled = True
-        else: 
+        else:
             mask_names = os.listdir(mask_dir)
             self.mask_names = []
             self.is_unlabelled = False
@@ -46,34 +49,39 @@ class SSLSegmentationDataset(Dataset):
     
     def __getitem__(self, index: int):
         chosen_image = self.image_names[index]
-        with Image.open(os.path.join(self.image_dir, chosen_image)) as img:
-            # transformation
-            img = np.asarray(img)
-            img = torch.FloatTensor(img).permute(2, 0, 1)
-            if self.input_transform is not None:
-                img = self.input_transform(img)
           
         if self.is_unlabelled:
+            img = Image.open(os.path.join(self.image_dir, chosen_image))
+            # transformation
+            # img = np.asarray(img)
+            # img = torch.FloatTensor(img).permute(2, 0, 1)
+            img = self.feature_extractor(img, return_tensors='pt')["pixel_values"].squeeze()
+            if self.input_transform is not None:
+                img = self.input_transform(img)
             if self.shared_transform is not None:
-                raise UserWarning("shared_transform should be None for unlabelled dataset")
+                raise ValueError("shared_transform should be None for unlabelled dataset")
             if self.return_image_name:
                 return img, chosen_image
             else: 
                 return img
         else:
-            with Image.open(os.path.join(self.mask_dir, chosen_image)) as mask:
-                # transformation
-                mask = np.asarray(mask)
-                mask = torch.LongTensor(mask)
-                if self.shared_transform is not None:
-                    example = torch.cat((img, mask.unsqueeze(0)), dim=0)
-                    example = self.shared_transform(example)
-                    img = example[:3, :, :]
-                    mask = example[-1, :, :].unsqueeze(0)
-                if self.target_transform is not None:
-                    mask = self.target_transform(mask)
-                    mask = mask.squeeze()
-                    mask = mask.type(torch.int64)
+            img = Image.open(os.path.join(self.image_dir, chosen_image))
+            mask = Image.open(os.path.join(self.mask_dir, chosen_image))
+            # transformation
+            # mask = np.asarray(mask)
+            # mask = torch.LongTensor(mask)
+            features = self.feature_extractor(img, mask, return_tensors='pt')
+            img = features["pixel_values"].squeeze()
+            mask = features["labels"]
+            if self.shared_transform is not None:
+                example = torch.cat((img, mask), dim=0)
+                example = self.shared_transform(example)
+                img = example[:3, :, :]
+                mask = example[-1, :, :].unsqueeze(0)
+            if self.target_transform is not None:
+                mask = self.target_transform(mask)
+            mask = mask.squeeze()
+            mask = mask.type(torch.int64)
             if self.return_image_name: 
                 return img, mask, chosen_image
             else: 
