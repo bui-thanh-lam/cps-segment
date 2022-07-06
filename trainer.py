@@ -3,9 +3,9 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from torch.utils.data import DataLoader
-from transformers import SegformerForSemanticSegmentation, SegformerConfig
-from torchgeometry.losses import DiceLoss
+from transformers import SegformerConfig
 
+from model import *
 from loss import CombinedCPSLoss
 from utils import *
 from evaluate import compute_iou, compute_dice
@@ -18,17 +18,17 @@ class NCPSTrainer:
         n_epochs,
         device = DEVICE,
         n_models = 3,
-        model_config: SegformerConfig = None,
-        model: SegformerForSemanticSegmentation = None,
+        model_config = None,
+        model = None,
         checkpoint_path = None,
         momentum_factor = 0,
         trade_off_factor = 1.5,
         n_labelled_examples_per_batch = 4,
+        pseudo_label_confidence_threshold = 0.7,
         learning_rate = 1e-4,
         weight_decay = 5e-6,
         use_multiple_teachers = False,
         use_cutmix = False,
-        image_size = 512,
     ) -> None:
         assert n_models > 1, "number of models should be larger than 1"
         self.n_models = n_models
@@ -42,15 +42,16 @@ class NCPSTrainer:
         self.use_cutmix = use_cutmix
         self.momentum_factor = momentum_factor
         self.trade_off_factor = trade_off_factor
+        self.pseudo_label_confidence_threshold = pseudo_label_confidence_threshold
         self.device = device
-        self.image_size = 512
 
         if model is not None:
             for _ in range(self.n_models):
                 self.models.append(model.deepcopy().to(self.device))
-        elif model_config is not None:
+        elif isinstance(model_config, SegformerConfig):
             for _ in range(self.n_models):
-                self.models.append(SegformerForSemanticSegmentation(config=model_config).to(self.device))
+                _model = huggingface_segformer(model_config)
+                self.models.append(_model.to(self.device))
         elif checkpoint_path is not None:
             self.load_from_checkpoint(checkpoint_path)
         else:
@@ -76,22 +77,28 @@ class NCPSTrainer:
 
 
     def _cutmix(self, x_U_1, x_U_2):
+        # x_U_1: shape bs * c * h * w
+        # x_U_2: shape bs * c * h * w
+        x_U_1 = x_U_1.numpy()
+        x_U_2 = x_U_2.numpy()
+        image_size = x_U_1.shape[-1]
         # init M
-        M = np.zeros_like(x_U_1)
-        area = random.uniform(0.05, 0.3) * self.image_size ** 2
+        M = np.zeros((image_size, image_size))
+        area = random.uniform(0.05, 0.3) * image_size ** 2
         ratio = random.uniform(0.25, 4)
         h = int(np.sqrt(area / ratio))
         w = int(ratio*h)
-        start_x = random.randint(self.image_size)
-        start_y = random.randint(self.image_size)
-        end_x = np.max(start_x+w, self.image_size)
-        end_y = np.max(start_x+h, self.image_size)
+        start_x = random.randint(0, image_size)
+        start_y = random.randint(0, image_size)
+        end_x = image_size if start_x+w > image_size else start_x+w
+        end_y = image_size if start_y+h > image_size else start_y+h
         M[start_x:end_x, start_y:end_y] += 1
         # cutmix
-        # x_U_1: shape bs * c * h * w
-        # x_U_2: shape bs * c * h * w
+        x_m = x_U_1.copy()
         # x_m: shape bs * c * h * w
-        return M
+        x_m[:, :, start_y:end_y, start_x:end_x] = x_U_2[:, :, start_y:end_y, start_x:end_x]
+        x_m = torch.from_numpy(x_m).to(self.device)
+        return x_m, M
 
 
     def _momentum_update(self):
@@ -111,6 +118,7 @@ class NCPSTrainer:
             trade_off_factor=self.trade_off_factor,
             use_cutmix=self.use_cutmix,
             use_multiple_teachers=self.use_multiple_teachers,
+            pseudo_label_confidence_threshold=self.pseudo_label_confidence_threshold,
         ).to(self.device)
         
         for epoch in range(self.n_epochs):
@@ -128,7 +136,7 @@ class NCPSTrainer:
                 # compute loss
                 loss = criterion(preds_L=P_L, preds_U=P_U, targets=Y)
                 if step % 10 == 0:
-                    print(f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch}, step: {step}, loss: {loss.item():.5f}")
+                    print(f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch+1}, step: {step}, loss: {loss.item():.5f}")
                 
                 # update teacher & student weight
                 loss.backward()
@@ -173,6 +181,8 @@ class NCPSTrainer:
     def predict(self, test_dataset, out_dir, mode='soft_voting'):
         assert mode in ["soft_voting", "max_confidence", "single"], "Mode must be either soft_voting, max_confidence or single"
         assert test_dataset.return_image_name == True, "test_dataset.return_image_name must be True"
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
         test_dataloader = DataLoader(dataset=test_dataset, batch_size=1)
         with torch.no_grad():
             if test_dataset.is_unlabelled:
@@ -229,8 +239,8 @@ class SupervisedTrainer:
         self,
         n_epochs,
         device = DEVICE,
-        model_config: SegformerConfig = None,
-        model: SegformerForSemanticSegmentation = None,
+        model_config = None,
+        model = None,
         checkpoint_path = None,
         learning_rate = 1e-4,
         weight_decay = 5e-6,
@@ -242,9 +252,10 @@ class SupervisedTrainer:
         if model is not None:
             self.model_config = None
             self.model = model.deepcopy().to(self.device)
-        elif model_config is not None:
+        elif isinstance(model_config, SegformerConfig):
             self.model_config = model_config
-            self.model = SegformerForSemanticSegmentation(config=model_config).to(self.device)
+            _model = huggingface_segformer(model_config)
+            self.model = _model.to(self.device)
         elif checkpoint_path is not None:
             self.load_from_checkpoint(checkpoint_path)
         else:
@@ -255,7 +266,6 @@ class SupervisedTrainer:
 
     def fit(self, labelled_dataset, val_dataset=None):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.batch_size)
-        # criterion = DiceLoss().to(self.device)
         criterion = torch.nn.CrossEntropyLoss().to(self.device)
         for epoch in range(self.n_epochs):
             print(f"======= Epoch {epoch+1} =======")
@@ -308,6 +318,8 @@ class SupervisedTrainer:
 
     def predict(self, test_dataset, out_dir):
         assert test_dataset.return_image_name == True, "test_dataset.return_image_name must be True"
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
         test_dataloader = DataLoader(dataset=test_dataset, batch_size=1)
         with torch.no_grad():
             if test_dataset.is_unlabelled:

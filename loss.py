@@ -1,3 +1,4 @@
+from regex import P
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -20,7 +21,6 @@ class CombinedCPSLoss(nn.Module):
         self.n_models = n_models
         self.trade_off_factor = trade_off_factor
         self.loss = nn.CrossEntropyLoss(
-            weight=torch.FloatTensor([0.1, 1.0]),
             reduction='mean',
             ignore_index=IGNORE_INDEX
         )
@@ -103,7 +103,8 @@ class CombinedCPSLoss(nn.Module):
         for j in range(self.n_models):
             P_ce_j = preds_L[:, :, :, :, j]
             Y_target = targets.squeeze()
-            ce_loss += self.loss(P_ce_j, Y_target)
+            # ce_loss += self.loss(P_ce_j, Y_target)
+            ce_loss += self.loss(P_ce_j, targets)
         
         # combine two losses
         combined_loss = (ce_loss + float(self.trade_off_factor / (self.n_models-1)) * cps_loss) / self.n_models

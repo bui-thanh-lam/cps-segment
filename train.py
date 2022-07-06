@@ -13,13 +13,14 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, default="semi")
     parser.add_argument("--model_config", type=str, default="nvidia/segformer-b0-finetuned-ade-512-512")
     parser.add_argument("--use_cutmix", type=bool, default=False)
-    parser.add_argument("--use_multiple_teachers", type=bool, default=False)
+    parser.add_argument("--pseudo_label_confidence_threshold", type=float, default=0.7)
+    parser.add_argument("--use_multiple_teachers", type=bool, default=True)
     parser.add_argument("--prediction_mode", type=str, default="soft_voting")
     parser.add_argument("--labelled_image_dir", type=str, default="../datasets/SemiDataset25/labelled/image")
     parser.add_argument("--unlabelled_image_dir", type=str, default="../datasets/SemiDataset25/unlabelled/image")
     parser.add_argument("--mask_dir", type=str, default="../datasets/SemiDataset25/labelled/mask")
     parser.add_argument("--test_image_dir", type=str, default="../datasets/TestDataset/CVC-300/images")
-    parser.add_argument("--test_mask_dir", type=str, default="../datasets/TestDataset/CVC-300/images")
+    parser.add_argument("--test_mask_dir", type=str, default="../datasets/TestDataset/CVC-300/masks")
     parser.add_argument("--out_dir", type=str, default="../datasets/TestDataset/CVC-300/output/semi")
     args = parser.parse_args()
     
@@ -58,6 +59,7 @@ if __name__ == "__main__":
             n_labelled_examples_per_batch=BATCH_SIZE // 2,
             use_multiple_teachers=args.use_multiple_teachers,
             use_cutmix=args.use_cutmix,
+            pseudo_label_confidence_threshold=args.pseudo_label_confidence_threshold,
         )
         semi_sup_trainer.fit(
             labelled_dataset, 
