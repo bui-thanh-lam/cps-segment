@@ -6,13 +6,14 @@ import random
 import shutil
 import numpy as np
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
+IMAGE_SIZE = 512
 DEVICE = torch.device('cuda')
 IGNORE_INDEX = -1
-N_EPOCHS = 50
+N_EPOCHS = 20
 LEARNING_RATE = 6e-5
 WEIGHT_DECAY = 5e-4
-BATCH_SIZE = 4
+BATCH_SIZE = 4                              # must be 2^n (n > 1)
 TRAIN_INPUT_TRANSFORMS = T.Compose([
     T.ColorJitter(
         brightness=0.2,
@@ -22,11 +23,12 @@ TRAIN_INPUT_TRANSFORMS = T.Compose([
     T.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225],
-    )
+    ),
+    T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
 ])
 TRAIN_SHARED_TRANSFORMS = T.Compose([
     T.RandomResizedCrop(
-        (512, 512),
+        (IMAGE_SIZE, IMAGE_SIZE),
         scale=(0.5, 2)
     ),
     T.RandomHorizontalFlip(),
@@ -39,8 +41,9 @@ VAL_INPUT_TRANSFORMS = T.Compose([
     )
 ])
 VAL_SHARED_TRANSFORMS = T.Compose([
-    T.Resize((512, 512)),
+    T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
 ])
+VAL_TARGET_TRANSFORMS = None
 
 
 def convert_black_and_white_to_binary_mask(mask_dir, out_dir):

@@ -8,7 +8,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Segformer")
     parser.add_argument("--model_config", type=str, default="segformer_b0")
     parser.add_argument("--use_cutmix", type=bool, default=False)
-    parser.add_argument("--pseudo_label_confidence_threshold", type=float, default=0.7)
+    parser.add_argument("--pseudo_label_confidence_threshold", type=float, default=0.9)
     parser.add_argument("--use_multiple_teachers", type=bool, default=True)
     parser.add_argument("--prediction_mode", type=str, default="soft_voting")
     parser.add_argument("--labelled_image_dir", type=str, default="../datasets/SemiDataset25/labelled/image")

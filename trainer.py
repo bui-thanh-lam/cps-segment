@@ -85,7 +85,7 @@ class NCPSTrainer:
                 p_j = model(input)['out']
             if self.model_type == "transformers":
                 p_j = model(input).logits
-                p_j = F.interpolate(p_j, scale_factor=4, mode='bilinear').unsqueeze(-1)
+                p_j = F.interpolate(p_j, scale_factor=4, mode='bilinear')
             p_j = p_j.unsqueeze(-1)
             if j == 0:
                 pseudo_labels = p_j
@@ -180,7 +180,7 @@ class NCPSTrainer:
                     preds = self.models[0](x_L)['out']
                 if self.model_type == "transformers":
                     preds = self.models[0](x_L).logits
-                    preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                    preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
                 preds = torch.argmax(preds, dim=1).squeeze()
                 iou.append(compute_iou(preds, Y))
                 dice.append(compute_dice(preds, Y))
@@ -193,7 +193,7 @@ class NCPSTrainer:
 
     def save(self, out_dir):
         for i, model in enumerate(self.models):
-            torch.save(model.state_dict(), os.path.join(out_dir, f'resnet_semi_supervised_head_{i}.pth'))
+            torch.save(model.state_dict(), os.path.join(out_dir, f'{self.model_config}_head_{i}.pth'))
 
     def predict(self, test_dataset, out_dir, mode='soft_voting'):
         assert mode in ["soft_voting", "max_confidence",
@@ -235,7 +235,7 @@ class NCPSTrainer:
                             else:
                                 preds += _preds
                     if self.model_type == "transformers":
-                        preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                        preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
                     preds = torch.argmax(preds, dim=1).squeeze()
                     convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
             else:
@@ -261,6 +261,6 @@ class NCPSTrainer:
                                 preds = _preds
                             else:
                                 preds += _preds
-                    # preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                    # preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
                     preds = torch.argmax(preds, dim=1).squeeze()
                     convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)

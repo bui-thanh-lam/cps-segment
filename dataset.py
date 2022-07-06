@@ -48,6 +48,7 @@ class SSLSegmentationDataset(Dataset):
                     self.mask_names.append(file)
                     
     def _register_feature_extractor(self):
+        if "segformer" not in self.feature_extractor_config: return
         if self.feature_extractor_config == "segformer_b0":
             self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/mit-b0")
         if self.feature_extractor_config == "segformer_b1":
@@ -64,13 +65,15 @@ class SSLSegmentationDataset(Dataset):
         if self.is_unlabelled:
             img = Image.open(os.path.join(self.image_dir, chosen_image))
             # transformation
-            # img = np.asarray(img)
-            # img = torch.FloatTensor(img).permute(2, 0, 1)
-            img = self.feature_extractor(img, return_tensors='pt')["pixel_values"].squeeze()
-            if self.input_transform is not None:
-                img = self.input_transform(img)
             if self.shared_transform is not None:
                 raise ValueError("shared_transform should be None for unlabelled dataset")
+            if "segformer" in self.feature_extractor_config:
+                img = self.feature_extractor(img, return_tensors='pt')["pixel_values"].squeeze()
+            else:
+                img = np.asarray(img)
+                img = torch.FloatTensor(img).permute(2, 0, 1)
+            if self.input_transform is not None:
+                img = self.input_transform(img)
             if self.return_image_name:
                 return img, chosen_image
             else:
@@ -79,11 +82,18 @@ class SSLSegmentationDataset(Dataset):
             img = Image.open(os.path.join(self.image_dir, chosen_image))
             mask = Image.open(os.path.join(self.mask_dir, chosen_image))
             # transformation
-            # mask = np.asarray(mask)
-            # mask = torch.LongTensor(mask)
-            features = self.feature_extractor(img, mask, return_tensors='pt')
-            img = features["pixel_values"].squeeze()
-            mask = features["labels"]
+            if "segformer" in self.feature_extractor_config:
+                features = self.feature_extractor(img, mask, return_tensors='pt')
+                img = features["pixel_values"].squeeze()
+                mask = features["labels"]
+            else:
+                img = np.asarray(img)
+                img = torch.FloatTensor(img).permute(2, 0, 1)
+                mask = np.asarray(mask)
+                mask = torch.FloatTensor(mask).unsqueeze(0)
+                # this contains bug needs fixing: compatible with deeplab & use input transformation
+                if self.input_transform is not None:
+                    img = self.input_transform(img)
             if self.shared_transform is not None:
                 example = torch.cat((img, mask), dim=0)
                 example = self.shared_transform(example)
