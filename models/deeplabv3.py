@@ -37,7 +37,6 @@ class DeepLabV3(_SimpleSegmentationModel):
             the backbone and returns a dense prediction.
         aux_classifier (nn.Module, optional): auxiliary classifier used during training
     """
-
     pass
 
 
@@ -100,14 +99,10 @@ class ASPP(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.5),
         )
-        # self.quant = torch.quantization.QuantStub()
-        # self.dequant = torch.quantization.DeQuantStub()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         _res = []
-        # x = self.quant(x)
         for conv in self.convs:
-            # _res.append(self.dequant(conv(x)))
             _res.append(conv(x))
         res = torch.cat(_res, dim=1)
 
@@ -132,7 +127,7 @@ def _deeplabv3_resnet(
 def deeplabv3_resnet50(
         pretrained: bool = False,
         progress: bool = True,
-        num_classes: int = 21,
+        num_classes: int = 2,
         aux_loss: Optional[bool] = None,
         pretrained_backbone: bool = True,
 ) -> DeepLabV3:
@@ -162,7 +157,7 @@ def deeplabv3_resnet50(
 def deeplabv3_resnet101(
         pretrained: bool = False,
         progress: bool = True,
-        num_classes: int = 21,
+        num_classes: int = 2,
         aux_loss: Optional[bool] = None,
         pretrained_backbone: bool = True,
 ) -> DeepLabV3:
@@ -191,8 +186,7 @@ def deeplabv3_resnet101(
 
 def deeplabv3_resnet34(
         pretrained: bool = False,
-        progress: bool = True,
-        num_classes: int = 21,
+        num_classes: int = 2,
         aux_loss: Optional[bool] = None,
         pretrained_backbone: bool = True,
 ) -> DeepLabV3:
@@ -211,11 +205,6 @@ def deeplabv3_resnet34(
         pretrained_backbone = True
 
     backbone = resnet.resnet34(pretrained=pretrained_backbone)
-
     model = _deeplabv3_resnet(backbone, num_classes, aux_loss)
-
-    # if pretrained:
-    #     arch = "deeplabv3_resnet101_coco"
-    #     _load_weights(arch, model, model_urls.get(arch, None), progress)
-
+    model.classifier = DeepLabHead(in_channels=512, num_classes=2)
     return model

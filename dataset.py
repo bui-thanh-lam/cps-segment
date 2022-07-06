@@ -10,22 +10,23 @@ from transformers import SegformerFeatureExtractor
 class SSLSegmentationDataset(Dataset):
 
     def __init__(
-            self,
-            image_dir,
-            mask_dir=None,
-            input_transform=None,
-            target_transform=None,
-            shared_transform=None,
-            return_image_name=False,
+        self,
+        image_dir,
+        mask_dir=None,
+        feature_extractor_config=None,
+        input_transform=None,
+        target_transform=None,
+        shared_transform=None,
+        return_image_name=False,
     ):
         super().__init__()
         self.image_dir = image_dir
         self.mask_dir = mask_dir
+        self.feature_extractor_config = feature_extractor_config
+        self._register_feature_extractor()
         self.input_transform = input_transform
         self.target_transform = target_transform
         self.shared_transform = shared_transform
-        self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512")
-        self.feature_extractor.reduce_labels = False
         self.return_image_name = return_image_name
 
         if mask_dir is None:
@@ -45,6 +46,17 @@ class SSLSegmentationDataset(Dataset):
                 elif file in mask_names:
                     self.image_names.append(file)
                     self.mask_names.append(file)
+                    
+    def _register_feature_extractor(self):
+        if self.feature_extractor_config == "segformer_b0":
+            self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/mit-b0")
+        if self.feature_extractor_config == "segformer_b1":
+            self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/mit-b1")
+        if self.feature_extractor_config == "segformer_b2":
+            self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/mit-b2")
+        if self.feature_extractor_config == "segformer_b3":
+            self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/mit-b3")
+        self.feature_extractor.reduce_labels = False
 
     def __getitem__(self, index: int):
         chosen_image = self.image_names[index]

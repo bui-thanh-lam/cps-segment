@@ -2,39 +2,32 @@ import random
 import torch
 import torch.nn.functional as F
 import numpy as np
-from torch.cuda.amp import GradScaler
 from torch.utils.data import DataLoader
-from transformers import SegformerConfig
 
-from model import *
 from loss import CombinedCPSLoss
 from utils import *
 from evaluate import compute_iou, compute_dice
-from models.deeplabv3 import deeplabv3_resnet34
-from models.deeplabv3 import DeepLabHead
-import torch
-
-torch.cuda.empty_cache()
+from models.deeplabv3 import deeplabv3_resnet34, deeplabv3_resnet50, deeplabv3_resnet101
+from models.segformer import segformer_b0, segformer_b1, segformer_b2, segformer_b3
 
 
 class NCPSTrainer:
 
     def __init__(
-            self,
-            n_epochs,
-            device=DEVICE,
-            n_models=3,
-            model_config=None,
-            model=None,
-            checkpoint_path=None,
-            momentum_factor=0,
-            trade_off_factor=1.5,
-            n_labelled_examples_per_batch=4,
-            pseudo_label_confidence_threshold=0.7,
-            learning_rate=1e-4,
-            weight_decay=5e-6,
-            use_multiple_teachers=False,
-            use_cutmix=False,
+        self,
+        n_epochs,
+        device=DEVICE,
+        n_models=3,
+        model_config=None,
+        checkpoint_path=None,
+        momentum_factor=0,
+        trade_off_factor=1.5,
+        n_labelled_examples_per_batch=4,
+        pseudo_label_confidence_threshold=0.7,
+        learning_rate=1e-4,
+        weight_decay=5e-6,
+        use_multiple_teachers=False,
+        use_cutmix=False,
     ) -> None:
         assert n_models > 1, "number of models should be larger than 1"
         self.n_models = n_models
@@ -50,41 +43,37 @@ class NCPSTrainer:
         self.trade_off_factor = trade_off_factor
         self.pseudo_label_confidence_threshold = pseudo_label_confidence_threshold
         self.device = device
-        self.scaler = GradScaler()
 
-        if model is not None:
-            for _ in range(self.n_models):
-                self.models.append(model.deepcopy().to(self.device))
-        elif isinstance(model_config, SegformerConfig):
-            for _ in range(self.n_models):
-                # create a quantized model instance
-                # model = DeepLabV3()
-                model = deeplabv3_resnet34(pretrained=True)
-                model.classifier = DeepLabHead(in_channels=512, num_classes=2)
-                # model_fp32.train()
-                # model_fp32.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
-                # model_fp32_fused = torch.quantization.fuse_modules(model_fp32,
-                #                                                    [['conv', 'bn', 'relu']])
-                # model_fp32_prepared = torch.quantization.prepare_qat(model_fp32_fused)
-                # model_qt8 = torch.quantization.quantize_dynamic(
-                #     model_fp32,  # the original model
-                #     {torch.nn.Linear, torch.nn.Module, torch.nn.Conv2d},  # a set of layers to dynamically quantize
-                #     dtype=torch.qint8)  # the target dtype for quantized weights
-                # with autocast(device_type='cuda', dtype=torch.float16):
-                #     self.models.append(model_qt8.to(self.device))
-                # self.models.append(model.to(self.device))
-                # _model = huggingface_segformer(model_config)
-                self.models.append(model.to(self.device))
+        for _ in range(self.n_models):
+            model = self._register_model()
+            self.models.append(model.to(self.device))
 
-        elif checkpoint_path is not None:
+        if checkpoint_path is not None:
             self.load_from_checkpoint(checkpoint_path)
-        else:
-            raise ValueError("Either model_config, model or checkpoint_path must be not None")
 
         for i in range(self.n_models):
             self.optims.append(
                 torch.optim.AdamW(self.models[i].parameters(), lr=learning_rate, weight_decay=weight_decay))
             self.schedulers.append(torch.optim.lr_scheduler.CosineAnnealingLR(self.optims[i], T_max=5))
+
+    def _register_model(self):
+        if self.model_config == "segformer_b0":
+            model = segformer_b0()
+        if self.model_config == "segformer_b1":
+            model = segformer_b1()
+        if self.model_config == "segformer_b2":
+            model = segformer_b2()
+        if self.model_config == "segformer_b3":
+            model = segformer_b3()
+        if self.model_config == "deeplabv3_resnet34":
+            model = deeplabv3_resnet34()
+        if self.model_config == "deeplabv3_resnet50":
+            model = deeplabv3_resnet50()
+        if self.model_config == "deeplabv3_resnet101":
+            model = deeplabv3_resnet101()
+        if "segformer" in self.model_config: self.model_type = "transformers"
+        if "deeplab" in self.model_config: self.model_type = "torchvision"
+        return model
 
     def _generate_pseudo_labels(self, input):
 
@@ -92,9 +81,11 @@ class NCPSTrainer:
             # output logit shape: bs * n_classes * h/4 * w/4
             # Huggingface's Segformer always downscales the output height & width by 4 times
 
-            p_j = model(input)['out']
-            # p_j = model(input).logits
-            # p_j = F.interpolate(p_j, scale_factor=4, mode='bilinear').unsqueeze(-1)
+            if self.model_type == "torchvision":
+                p_j = model(input)['out']
+            if self.model_type == "transformers":
+                p_j = model(input).logits
+                p_j = F.interpolate(p_j, scale_factor=4, mode='bilinear').unsqueeze(-1)
             p_j = p_j.unsqueeze(-1)
             if j == 0:
                 pseudo_labels = p_j
@@ -164,17 +155,10 @@ class NCPSTrainer:
                         f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}")
 
                 # update teacher & student weight
-                # self.scaler.scale(loss).backward()
                 loss.backward()
                 for i in range(self.n_models):
                     self.optims[i].step()
-
-                    # with autocast(device_type='cuda'):
                     self.optims[i].zero_grad()
-                    # self.optims[i].step()
-                    # self.scaler.step(self.optims[i])
-                    # self.scaler.scale(self.optims[i]).zero_grad()
-                    # self.scaler.update()
 
             for i in range(self.n_models):
                 self.schedulers[i].step()
@@ -192,8 +176,11 @@ class NCPSTrainer:
                 self.models[0].eval()
                 x_L = x_L.to(self.device)
                 Y = Y.to(self.device)
-                preds = self.models[0](x_L)['out']
-                # preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                if self.model_type == "torchvision":
+                    preds = self.models[0](x_L)['out']
+                if self.model_type == "transformers":
+                    preds = self.models[0](x_L).logits
+                    preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
                 preds = torch.argmax(preds, dim=1).squeeze()
                 iou.append(compute_iou(preds, Y))
                 dice.append(compute_dice(preds, Y))
@@ -221,11 +208,17 @@ class NCPSTrainer:
                     if isinstance(image_name, tuple): image_name = image_name[0]
                     x = x.to(self.device)
                     if mode == "single":
-                        preds = self.models[0](x).logits
+                        if self.model_type == "torchvision":
+                            preds = self.models[0](x)['out']
+                        if self.model_type == "transformers":
+                            preds = self.models[0](x).logits
                     if mode == "max_confidence":
                         preds = None
                         for model in self.models:
-                            _preds = model(x).logits
+                            if self.model_type == "torchvision":
+                                _preds = self.models[0](x)['out']
+                            if self.model_type == "transformers":
+                                _preds = self.models[0](x).logits
                             if preds is None:
                                 preds = _preds
                             else:
@@ -233,12 +226,16 @@ class NCPSTrainer:
                     if mode == "soft_voting":
                         preds = None
                         for model in self.models:
-                            _preds = model(x).logits
+                            if self.model_type == "torchvision":
+                                _preds = self.models[0](x)['out']
+                            if self.model_type == "transformers":
+                                _preds = self.models[0](x).logits
                             if preds is None:
                                 preds = _preds
                             else:
                                 preds += _preds
-                    preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
+                    if self.model_type == "transformers":
+                        preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
                     preds = torch.argmax(preds, dim=1).squeeze()
                     convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
             else:
@@ -265,109 +262,5 @@ class NCPSTrainer:
                             else:
                                 preds += _preds
                     # preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
-                    preds = torch.argmax(preds, dim=1).squeeze()
-                    convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
-
-
-class SupervisedTrainer:
-
-    def __init__(
-            self,
-            n_epochs,
-            device=DEVICE,
-            model_config=None,
-            model=None,
-            checkpoint_path=None,
-            learning_rate=1e-4,
-            weight_decay=5e-6,
-            batch_size=16
-    ) -> None:
-        self.n_epochs = n_epochs
-        self.device = device
-        self.batch_size = batch_size
-        if model is not None:
-            self.model_config = None
-            self.model = model.deepcopy().to(self.device)
-        elif isinstance(model_config, SegformerConfig):
-            self.model_config = model_config
-            _model = huggingface_segformer(model_config)
-            self.model = _model.to(self.device)
-        elif checkpoint_path is not None:
-            self.load_from_checkpoint(checkpoint_path)
-        else:
-            raise ValueError("Either model_config, model or checkpoint_path must be not None")
-        self.optim = torch.optim.AdamW(self.model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optim, T_max=5)
-
-    def fit(self, labelled_dataset, val_dataset=None):
-        labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.batch_size)
-        criterion = torch.nn.CrossEntropyLoss().to(self.device)
-        for epoch in range(self.n_epochs):
-            print(f"======= Epoch {epoch + 1} =======")
-            for step, [x_L, Y] in enumerate(labelled_dataloader):
-                x_L = x_L.to(self.device)
-                Y = Y.squeeze().to(self.device)
-                preds = self.model(x_L).logits
-                preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
-                loss = criterion(preds, Y)
-                if step % 10 == 0:
-                    print(f"[INFO] [TRAIN] mode: supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}")
-                loss.backward()
-                self.optim.step()
-                self.optim.zero_grad()
-            self.scheduler.step()
-            if val_dataset is not None:
-                print(f"======= Evaluate on val set =======")
-                print(self.evaluate(val_dataset))
-
-    def evaluate(self, val_dataset):
-        val_dataloader = DataLoader(dataset=val_dataset, batch_size=1)
-        dice = []
-        iou = []
-        with torch.no_grad():
-            for step, [x_L, Y] in enumerate(val_dataloader):
-                x_L = x_L.to(self.device)
-                Y = Y.to(self.device).squeeze()
-                preds = self.model(x_L).logits
-                if preds.shape[-1] != Y.shape[-1]:
-                    preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
-                preds = torch.argmax(preds, dim=1).squeeze()
-                iou.append(compute_iou(preds, Y))
-                dice.append(compute_dice(preds, Y))
-            mIoU = np.mean(iou)
-            mDice = np.mean(dice)
-        return {
-            "mIoU": mIoU,
-            "mDice": mDice
-        }
-
-    def save(self, out_dir):
-        torch.save(self.model, os.path.join(out_dir, 'segformer_supervised.pth'))
-
-    def load_from_checkpoint(self):
-        pass
-
-    def predict(self, test_dataset, out_dir):
-        assert test_dataset.return_image_name == True, "test_dataset.return_image_name must be True"
-        if not os.path.exists(out_dir):
-            os.makedirs(out_dir)
-        test_dataloader = DataLoader(dataset=test_dataset, batch_size=1)
-        with torch.no_grad():
-            if test_dataset.is_unlabelled:
-                for step, [x, image_name] in enumerate(test_dataloader):
-                    if isinstance(image_name, tuple): image_name = image_name[0]
-                    x = x.to(self.device)
-                    preds = self.model(x).logits
-                    if preds.shape[-1] != Y.shape[-1]:
-                        preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
-                    preds = torch.argmax(preds, dim=1).squeeze()
-                    convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
-            else:
-                for step, [x, Y, image_name] in enumerate(test_dataloader):
-                    if isinstance(image_name, tuple): image_name = image_name[0]
-                    x = x.to(self.device)
-                    preds = self.model(x).logits
-                    if preds.shape[-1] != Y.shape[-1]:
-                        preds = F.interpolate(preds, scale_factor=4, mode='bicubic')
                     preds = torch.argmax(preds, dim=1).squeeze()
                     convert_model_output_to_black_and_white_mask(preds, out_dir, image_name)
