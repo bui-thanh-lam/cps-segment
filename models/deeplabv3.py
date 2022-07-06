@@ -202,7 +202,7 @@ def deeplabv3_resnet34(
     """
     if pretrained:
         aux_loss = True
-        pretrained_backbone = True
+        pretrained_backbone = False
 
     backbone = resnet.resnet34(pretrained=pretrained_backbone)
     model = _deeplabv3_resnet(backbone, num_classes, aux_loss)

@@ -27,12 +27,12 @@ class CombinedCPSLoss(nn.Module):
         self.use_multiple_teachers = use_multiple_teachers
 
     def _multiple_teacher_correction(self, pseudo_labels):
-        # shape: bs * h * w * n_models
+        # shape: bs * n_classes * h * w * n_models
         _sum = torch.sum(pseudo_labels, dim=-1)
         _pseudo_labels = torch.empty_like(pseudo_labels)
         for i in range(self.n_models):
             _pseudo_labels[:, :, :, :, i] = _sum - pseudo_labels[:, :, :, :, i]
-        # shape: bs * h * w * n_models but differnet notations
+        # shape: bs * n_classes * h * w * n_models, but differnet notations
         return _pseudo_labels
 
     def _prune_pseudo_label_by_threshold(self, pseudo_labels):
