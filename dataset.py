@@ -8,15 +8,15 @@ from transformers import SegformerFeatureExtractor
 
 
 class SSLSegmentationDataset(Dataset):
-    
+
     def __init__(
-        self,
-        image_dir,
-        mask_dir=None,
-        input_transform=None,
-        target_transform=None,
-        shared_transform=None,
-        return_image_name=False,
+            self,
+            image_dir,
+            mask_dir=None,
+            input_transform=None,
+            target_transform=None,
+            shared_transform=None,
+            return_image_name=False,
     ):
         super().__init__()
         self.image_dir = image_dir
@@ -27,14 +27,14 @@ class SSLSegmentationDataset(Dataset):
         self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/segformer-b0-finetuned-ade-512-512")
         self.feature_extractor.reduce_labels = False
         self.return_image_name = return_image_name
-        
-        if mask_dir is None: 
+
+        if mask_dir is None:
             self.is_unlabelled = True
         else:
             mask_names = os.listdir(mask_dir)
             self.mask_names = []
             self.is_unlabelled = False
-        
+
         # Only consider which image names exist in both image_dir and mask_dir
         self.image_names = []
         for file in os.listdir(image_dir):
@@ -45,11 +45,10 @@ class SSLSegmentationDataset(Dataset):
                 elif file in mask_names:
                     self.image_names.append(file)
                     self.mask_names.append(file)
-        
-    
+
     def __getitem__(self, index: int):
         chosen_image = self.image_names[index]
-          
+
         if self.is_unlabelled:
             img = Image.open(os.path.join(self.image_dir, chosen_image))
             # transformation
@@ -62,7 +61,7 @@ class SSLSegmentationDataset(Dataset):
                 raise ValueError("shared_transform should be None for unlabelled dataset")
             if self.return_image_name:
                 return img, chosen_image
-            else: 
+            else:
                 return img
         else:
             img = Image.open(os.path.join(self.image_dir, chosen_image))
@@ -82,11 +81,10 @@ class SSLSegmentationDataset(Dataset):
                 mask = self.target_transform(mask)
             mask = mask.squeeze()
             mask = mask.type(torch.int64)
-            if self.return_image_name: 
+            if self.return_image_name:
                 return img, mask, chosen_image
-            else: 
+            else:
                 return img, mask
-
 
     def __len__(self) -> int:
         return len(self.image_names)
