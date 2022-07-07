@@ -7,13 +7,9 @@ import shutil
 import numpy as np
 
 
-IMAGE_SIZE = 512
+IMAGE_SIZE = 340
 DEVICE = torch.device('cuda')
 IGNORE_INDEX = -1
-N_EPOCHS = 20
-LEARNING_RATE = 6e-5
-WEIGHT_DECAY = 5e-4
-BATCH_SIZE = 4                              # must be 2^n (n > 1)
 TRAIN_INPUT_TRANSFORMS = T.Compose([
     T.ColorJitter(
         brightness=0.2,

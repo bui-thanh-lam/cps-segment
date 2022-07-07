@@ -1,10 +1,12 @@
 from torch.utils.data import Dataset
 from PIL import Image
-import torchvision.transforms.functional as T
+import torchvision.transforms.functional as F
 import os
 import numpy as np
 import torch
 from transformers import SegformerFeatureExtractor
+
+from utils import IMAGE_SIZE
 
 
 class SSLSegmentationDataset(Dataset):
@@ -48,6 +50,7 @@ class SSLSegmentationDataset(Dataset):
                     self.mask_names.append(file)
                     
     def _register_feature_extractor(self):
+        # huggingface's feature extractor only does resizing & normalization
         if "segformer" not in self.feature_extractor_config: return
         if self.feature_extractor_config == "segformer_b0":
             self.feature_extractor = SegformerFeatureExtractor.from_pretrained("nvidia/mit-b0")
@@ -91,9 +94,10 @@ class SSLSegmentationDataset(Dataset):
                 img = torch.FloatTensor(img).permute(2, 0, 1)
                 mask = np.asarray(mask)
                 mask = torch.FloatTensor(mask).unsqueeze(0)
-                # this contains bug needs fixing: compatible with deeplab & use input transformation
-                if self.input_transform is not None:
-                    img = self.input_transform(img)
+                # only resize & normalize labelled data
+                img = F.resize(img, (IMAGE_SIZE, IMAGE_SIZE))
+                img = F.normalize(img, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                mask = F.resize(mask, (IMAGE_SIZE, IMAGE_SIZE))
             if self.shared_transform is not None:
                 example = torch.cat((img, mask), dim=0)
                 example = self.shared_transform(example)
