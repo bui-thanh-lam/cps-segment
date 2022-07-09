@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 
 from loss import CombinedCPSLoss
 from utils import *
-from evaluate import compute_iou, compute_dice
+from metrics import compute_iou, compute_dice
 from models.deeplabv3 import deeplabv3_resnet34, deeplabv3_resnet50, deeplabv3_resnet101
 from models.segformer import segformer_b0, segformer_b1, segformer_b2, segformer_b3
 
@@ -15,7 +15,7 @@ class NCPSTrainer:
 
     def __init__(
         self,
-        n_epochs,
+        n_epochs=5,
         device=DEVICE,
         n_models=3,
         model_config=None,
@@ -121,10 +121,17 @@ class NCPSTrainer:
     def _momentum_update(self):
         pass
 
-    def load_from_checkpoint(self):
-        pass
+    def load_from_checkpoint(self, checkpoint_path):
+        heads = []
+        for file in os.listdir(checkpoint_path):
+            if file.split('.')[-1] == 'pth':
+                heads.append(file)
+        for i, head in enumerate(heads):
+            _state_dict = torch.load(os.path.join(checkpoint_path, head), self.device)
+            self.models[i].load_state_dict(_state_dict)
+            print(f"Load checkpoint from {os.path.join(checkpoint_path, head)} successfully!")
 
-    def fit(self, labelled_dataset, unlabelled_dataset, val_dataset=None):
+    def fit(self, labelled_dataset, unlabelled_dataset, val_dataset=None, save_after_one_epoch=False, out_dir=None):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.n_labelled_examples_per_batch)
         unlabelled_dataloader = DataLoader(dataset=unlabelled_dataset, batch_size=self.n_labelled_examples_per_batch)
 
@@ -168,19 +175,32 @@ class NCPSTrainer:
                 print(f"======= Evaluate on val set =======")
                 print(self.evaluate(val_dataset))
 
+            if save_after_one_epoch == True and out_dir is not None:
+                print(f"Save checkpoint at epoch {epoch+1} to {out_dir}...")
+                self.save(out_dir)
+
     def evaluate(self, val_dataset):
         val_dataloader = DataLoader(dataset=val_dataset, batch_size=1)
         dice = []
         iou = []
+        for model in self.models:
+            model.eval()
         with torch.no_grad():
             for step, [x_L, Y] in enumerate(val_dataloader):
                 self.models[0].eval()
                 x_L = x_L.to(self.device)
                 Y = Y.to(self.device)
-                if self.model_type == "torchvision":
-                    preds = self.models[0](x_L)['out']
+                preds = None
+                for model in self.models:
+                    if self.model_type == "torchvision":
+                       _preds = model(x_L)['out']
+                    if self.model_type == "transformers":
+                        _preds = model(x_L).logits
+                    if preds is None:
+                        preds = _preds
+                    else:
+                        preds += _preds
                 if self.model_type == "transformers":
-                    preds = self.models[0](x_L).logits
                     preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
                 preds = torch.argmax(preds, dim=1).squeeze()
                 iou.append(compute_iou(preds, Y))
@@ -230,9 +250,9 @@ class NCPSTrainer:
                         preds = None
                         for model in self.models:
                             if self.model_type == "torchvision":
-                                preds = model(x)['out']
+                                _preds = model(x)['out']
                             if self.model_type == "transformers":
-                                preds = model(x).logits
+                                _preds = model(x).logits
                             if preds is None:
                                 preds = _preds
                             else:

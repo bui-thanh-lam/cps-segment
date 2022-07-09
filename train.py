@@ -5,10 +5,11 @@ from utils import *
 
 if __name__ == "__main__":
     torch.cuda.empty_cache()
-    parser = argparse.ArgumentParser(description="Train Segformer")
+    parser = argparse.ArgumentParser(description="Train n-CPS")
     parser.add_argument("--model_config", type=str)
     parser.add_argument("--use_cutmix", type=bool, default=False)
     parser.add_argument("--n_epochs", type=int, default=5)
+    parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--pseudo_label_confidence_threshold", type=float, default=0.7)
     parser.add_argument("--learning_rate", type=float, default=6e-5)
@@ -21,7 +22,7 @@ if __name__ == "__main__":
     parser.add_argument("--mask_dir", type=str, default="../datasets/SemiDataset25/labelled/mask")
     parser.add_argument("--test_image_dir", type=str, default="../datasets/TestDataset/CVC-300/images")
     parser.add_argument("--test_mask_dir", type=str, default="../datasets/TestDataset/CVC-300/masks")
-    parser.add_argument("--out_dir", type=str)
+    parser.add_argument("--out_dir", type=str, default=None)
     args = parser.parse_args()
 
     _test_set = SSLSegmentationDataset(
@@ -52,24 +53,25 @@ if __name__ == "__main__":
         target_transform=TRAIN_TARGET_TRANSFORMS,
         shared_transform=TRAIN_SHARED_TRANSFORMS,
     )
-    print("==== Start training, semi supervised mode ====")
     semi_sup_trainer = NCPSTrainer(
         model_config=args.model_config,
         n_epochs=args.n_epochs,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         trade_off_factor=args.trade_off_factor,
+        checkpoint_path=args.checkpoint_path,
         n_labelled_examples_per_batch=args.batch_size // 2,
         use_multiple_teachers=args.use_multiple_teachers,
         use_cutmix=args.use_cutmix,
         pseudo_label_confidence_threshold=args.pseudo_label_confidence_threshold,
     )
+    print("==== Start training, semi supervised mode ====")
     semi_sup_trainer.fit(
         labelled_dataset,
         unlabelled_dataset,
-        test_set
+        test_set,
+        save_after_one_epoch=True,
+        out_dir=args.out_dir
     )
-    print("Evaluate on test set:")
-    print(semi_sup_trainer.evaluate(test_set))
     semi_sup_trainer.predict(_test_set, args.out_dir, args.prediction_mode)
     semi_sup_trainer.save(args.out_dir)
