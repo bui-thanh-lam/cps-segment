@@ -7,13 +7,9 @@ import shutil
 import numpy as np
 
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+IMAGE_SIZE = 340
 DEVICE = torch.device('cuda')
 IGNORE_INDEX = -1
-N_EPOCHS = 20
-LEARNING_RATE = 6e-5
-WEIGHT_DECAY = 5e-4
-BATCH_SIZE = 8
 TRAIN_INPUT_TRANSFORMS = T.Compose([
     T.ColorJitter(
         brightness=0.2,
@@ -23,11 +19,12 @@ TRAIN_INPUT_TRANSFORMS = T.Compose([
     T.Normalize(
         mean=[0.485, 0.456, 0.406],
         std=[0.229, 0.224, 0.225],
-    )
+    ),
+    T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
 ])
 TRAIN_SHARED_TRANSFORMS = T.Compose([
     T.RandomResizedCrop(
-        (512, 512),
+        (IMAGE_SIZE, IMAGE_SIZE),
         scale=(0.5, 2)
     ),
     T.RandomHorizontalFlip(),
@@ -40,8 +37,9 @@ VAL_INPUT_TRANSFORMS = T.Compose([
     )
 ])
 VAL_SHARED_TRANSFORMS = T.Compose([
-    T.Resize((512, 512)),
+    T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
 ])
+VAL_TARGET_TRANSFORMS = None
 
 
 def convert_black_and_white_to_binary_mask(mask_dir, out_dir):
@@ -69,9 +67,9 @@ def split_data_into_ssl_strategy(image_dir, mask_dir, out_dir, split_ratio=0.25)
     os.makedirs(os.path.join(out_dir, 'labelled', 'mask'))
     os.makedirs(os.path.join(out_dir, 'unlabelled', 'image'))
     image_names = os.listdir(image_dir)
-    chosen_images = random.sample(image_names, int(len(image_names)*split_ratio))
+    chosen_images = random.sample(image_names, int(len(image_names) * split_ratio))
     for image in image_names:
-        if image in  chosen_images:
+        if image in chosen_images:
             shutil.copy(os.path.join(image_dir, image), os.path.join(out_dir, 'labelled', 'image', image))
             shutil.copy(os.path.join(mask_dir, image), os.path.join(out_dir, 'labelled', 'mask', image))
         else:
@@ -80,4 +78,3 @@ def split_data_into_ssl_strategy(image_dir, mask_dir, out_dir, split_ratio=0.25)
 
 def visualize_pseudo_labels():
     pass
-

@@ -1,4 +1,3 @@
-from regex import P
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -9,12 +8,12 @@ from utils import DEVICE, IGNORE_INDEX
 class CombinedCPSLoss(nn.Module):
 
     def __init__(
-        self, 
-        n_models=3,
-        trade_off_factor=1.5,
-        pseudo_label_confidence_threshold=0.7,
-        use_cutmix=False,
-        use_multiple_teachers=False
+            self,
+            n_models=3,
+            trade_off_factor=1.5,
+            pseudo_label_confidence_threshold=0.7,
+            use_cutmix=False,
+            use_multiple_teachers=False
     ):
         super().__init__()
         self.pseudo_label_confidence_threshold = pseudo_label_confidence_threshold
@@ -27,16 +26,14 @@ class CombinedCPSLoss(nn.Module):
         self.use_cutmix = use_cutmix
         self.use_multiple_teachers = use_multiple_teachers
 
-    
     def _multiple_teacher_correction(self, pseudo_labels):
-        # shape: bs * h * w * n_models
+        # shape: bs * n_classes * h * w * n_models
         _sum = torch.sum(pseudo_labels, dim=-1)
         _pseudo_labels = torch.empty_like(pseudo_labels)
         for i in range(self.n_models):
             _pseudo_labels[:, :, :, :, i] = _sum - pseudo_labels[:, :, :, :, i]
-        # shape: bs * h * w * n_models but differnet notations
+        # shape: bs * n_classes * h * w * n_models, but differnet notations
         return _pseudo_labels
-
 
     def _prune_pseudo_label_by_threshold(self, pseudo_labels):
         # pseudo_labels: shape bs * n_classes * h * w * n_models
@@ -46,14 +43,13 @@ class CombinedCPSLoss(nn.Module):
         # _pseudo_labels: shape bs * h * w * n_models
         return _pseudo_labels
 
-
     def forward(self, preds_L, preds_U, targets):
         # preds: bs * class * w * h * n_models
         # targets: bs * 1 * w * h
         cps_U_loss = torch.zeros(1).to(DEVICE)
         cps_L_loss = torch.zeros(1).to(DEVICE)
         ce_loss = torch.zeros(1).to(DEVICE)
-        
+
         if self.use_multiple_teachers:
             Y_U = self._multiple_teacher_correction(preds_U)
             Y_L = self._multiple_teacher_correction(preds_L)
@@ -73,7 +69,7 @@ class CombinedCPSLoss(nn.Module):
                 cps_U_loss += self.loss(P_U_j, Y_U_j)
                 cps_L_loss += self.loss(P_L_j, Y_L_j)
             cps_loss = cps_U_loss + cps_L_loss
-            
+
         else:
             for r in range(self.n_models):
                 for l in range(r):
@@ -105,7 +101,7 @@ class CombinedCPSLoss(nn.Module):
             Y_target = targets.squeeze()
             # ce_loss += self.loss(P_ce_j, Y_target)
             ce_loss += self.loss(P_ce_j, targets)
-        
+
         # combine two losses
-        combined_loss = (ce_loss + float(self.trade_off_factor / (self.n_models-1)) * cps_loss) / self.n_models
+        combined_loss = (ce_loss + float(self.trade_off_factor / (self.n_models - 1)) * cps_loss) / self.n_models
         return combined_loss
