@@ -48,6 +48,13 @@ class NCPSTrainer:
             model = self._register_model()
             self.models.append(model.to(self.device))
 
+        if momentum_factor > 0:
+            self.use_momentum = True
+            self.teachers = []
+            for _ in range(self.n_models):
+                model = self._register_model()
+                self.teachers.append()
+
         if checkpoint_path is not None:
             self.load_from_checkpoint(checkpoint_path)
 
@@ -116,6 +123,7 @@ class NCPSTrainer:
         # x_m: shape bs * c * h * w
         x_m[:, :, start_y:end_y, start_x:end_x] = x_U_2[:, :, start_y:end_y, start_x:end_x]
         x_m = torch.from_numpy(x_m).to(self.device)
+        M = torch.from_numpy(M).to(self.device)
         return x_m, M
 
     def _momentum_update(self):
@@ -146,27 +154,54 @@ class NCPSTrainer:
             model.train()
         for epoch in range(self.n_epochs):
             print(f"======= Epoch {epoch + 1} =======")
-            for (step, [x_L, Y]), (_, x_U) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader)):
+            if self.use_cutmix:
+                for (step, [x_L, Y]), (_, x_U_1), (__, x_U_2) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader), enumerate(unlabelled_dataloader)):
+                    x_m, M = self._cutmix(x_U_1, x_U_2)
+                    x_L = x_L.to(self.device)
+                    x_U_1 = x_U_1.to(self.device)
+                    x_U_2 = x_U_2.to(self.device)
+                    Y = Y.to(self.device)
 
-                x_L = x_L.to(self.device)
-                x_U = x_U.to(self.device)
-                Y = Y.to(self.device)
+                    # gen pseudo label
+                    P_L = self._generate_pseudo_labels(x_L)
+                    P_m = self._generate_pseudo_labels(x_m)
+                    P_U_1 = self._generate_pseudo_labels(x_U_1)
+                    P_U_2 = self._generate_pseudo_labels(x_U_2)
 
-                # gen pseudo label
-                P_L = self._generate_pseudo_labels(x_L)
-                P_U = self._generate_pseudo_labels(x_U)
+                    M = M.expand(P_m.shape[:-1])
 
-                # compute loss
-                loss = criterion(preds_L=P_L, preds_U=P_U, targets=Y)
-                if step % 10 == 0:
-                    print(
-                        f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}")
+                    # compute loss
+                    loss = criterion(preds_L=P_L, preds_U_1=P_U_1, preds_U_2=P_U_2, preds_m=P_m, targets=Y, M=M)
+                    if step % 10 == 0:
+                        print(
+                            f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}")
 
-                # update teacher & student weight
-                loss.backward()
-                for i in range(self.n_models):
-                    self.optims[i].step()
-                    self.optims[i].zero_grad()
+                    # update teacher & student weight
+                    loss.backward()
+                    for i in range(self.n_models):
+                        self.optims[i].step()
+                        self.optims[i].zero_grad()
+            else:
+                for (step, [x_L, Y]), (_, x_U) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader)):
+                    x_L = x_L.to(self.device)
+                    x_U = x_U.to(self.device)
+                    Y = Y.to(self.device)
+
+                    # gen pseudo label
+                    P_L = self._generate_pseudo_labels(x_L)
+                    P_U = self._generate_pseudo_labels(x_U)
+
+                    # compute loss
+                    loss = criterion(preds_L=P_L, preds_U=P_U, targets=Y)
+                    if step % 10 == 0:
+                        print(
+                            f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}")
+
+                    # update teacher & student weight
+                    loss.backward()
+                    for i in range(self.n_models):
+                        self.optims[i].step()
+                        self.optims[i].zero_grad()
 
             for i in range(self.n_models):
                 self.schedulers[i].step()
@@ -213,6 +248,8 @@ class NCPSTrainer:
         }
 
     def save(self, out_dir):
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
         for i, model in enumerate(self.models):
             torch.save(model.state_dict(), os.path.join(out_dir, f'{self.model_config}_head_{i}.pth'))
 

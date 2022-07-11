@@ -32,7 +32,7 @@ if __name__ == "__main__":
     )
     colon_db = SSLSegmentationDataset(
         image_dir="../datasets/TestDataset/CVC-ColonDB/images",
-        mask_dir="../datasets/TestDataset/CVC-ClinicDB/masks",
+        mask_dir="../datasets/TestDataset/CVC-ColonDB/masks",
         feature_extractor_config=args.model_config,
         input_transform=VAL_INPUT_TRANSFORMS,
         shared_transform=VAL_SHARED_TRANSFORMS,
