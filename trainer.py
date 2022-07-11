@@ -61,7 +61,7 @@ class NCPSTrainer:
         for i in range(self.n_models):
             self.optims.append(
                 torch.optim.AdamW(self.models[i].parameters(), lr=learning_rate, weight_decay=weight_decay))
-            self.schedulers.append(torch.optim.lr_scheduler.CosineAnnealingLR(self.optims[i], T_max=5))
+            self.schedulers.append(torch.optim.lr_scheduler.CosineAnnealingLR(self.optims[i], T_max=self.n_epochs))
 
     def _register_model(self):
         if self.model_config == "segformer_b0":
@@ -139,10 +139,10 @@ class NCPSTrainer:
             self.models[i].load_state_dict(_state_dict)
             print(f"Load checkpoint from {os.path.join(checkpoint_path, head)} successfully!")
 
-    def fit(self, labelled_dataset, unlabelled_dataset, val_dataset=None, save_after_one_epoch=False, out_dir=None):
+    def fit(self, labelled_dataset, unlabelled_dataset, val_dataset=None, save_after_one_epoch=False, out_dir=None, logging=True):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.n_labelled_examples_per_batch)
         unlabelled_dataloader = DataLoader(dataset=unlabelled_dataset, batch_size=self.n_labelled_examples_per_batch)
-
+        
         criterion = CombinedCPSLoss(
             n_models=self.n_models,
             trade_off_factor=self.trade_off_factor,
@@ -150,10 +150,27 @@ class NCPSTrainer:
             use_multiple_teachers=self.use_multiple_teachers,
             pseudo_label_confidence_threshold=self.pseudo_label_confidence_threshold,
         ).to(self.device)
+        
         for model in self.models:
             model.train()
+        
+        if out_dir is not None:
+            if not os.path.exists(out_dir):
+                os.makedirs(out_dir)
+
+        info = f"Start training, semi-supervised model, model {self.model_config}"
+        print(info)
+        if logging:
+            with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
+                log.write(info)
+        
         for epoch in range(self.n_epochs):
-            print(f"======= Epoch {epoch + 1} =======")
+            info = f"======= Epoch {epoch + 1} =======" 
+            print(info)
+            if logging:
+                with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
+                    log.write(info)
+            
             if self.use_cutmix:
                 for (step, [x_L, Y]), (_, x_U_1), (__, x_U_2) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader), enumerate(unlabelled_dataloader)):
                     x_m, M = self._cutmix(x_U_1, x_U_2)
@@ -173,8 +190,11 @@ class NCPSTrainer:
                     # compute loss
                     loss = criterion(preds_L=P_L, preds_U_1=P_U_1, preds_U_2=P_U_2, preds_m=P_m, targets=Y, M=M)
                     if step % 10 == 0:
-                        print(
-                            f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}")
+                        info = f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}"
+                        print(info)
+                        if logging:
+                            with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
+                                log.write(info)
 
                     # update teacher & student weight
                     loss.backward()
@@ -194,8 +214,11 @@ class NCPSTrainer:
                     # compute loss
                     loss = criterion(preds_L=P_L, preds_U=P_U, targets=Y)
                     if step % 10 == 0:
-                        print(
-                            f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}")
+                        info = f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}"
+                        print(info)
+                        if logging:
+                            with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
+                                log.write(info)
 
                     # update teacher & student weight
                     loss.backward()
@@ -207,11 +230,18 @@ class NCPSTrainer:
                 self.schedulers[i].step()
 
             if val_dataset is not None:
-                print(f"======= Evaluate on val set =======")
-                print(self.evaluate(val_dataset))
+                info = f"======= Evaluate on CVC-300 =======\n{self.evaluate(val_dataset)}"
+                print(info)
+                if logging:
+                    with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
+                        log.write(info)
 
             if save_after_one_epoch == True and out_dir is not None:
-                print(f"Save checkpoint at epoch {epoch+1} to {out_dir}...")
+                info = f"Save checkpoint at epoch {epoch+1} to {out_dir}..."
+                print(info)
+                if logging:
+                    with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
+                        log.write(info)
                 self.save(out_dir)
 
     def evaluate(self, val_dataset):

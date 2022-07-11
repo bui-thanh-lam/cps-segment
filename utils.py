@@ -13,8 +13,8 @@ IGNORE_INDEX = -1
 TRAIN_INPUT_TRANSFORMS = T.Compose([
     T.ColorJitter(
         brightness=0.2,
-        contrast=0.2,
-        hue=0.1
+        contrast=0.1,
+        hue=0
     ),
     T.Normalize(
         mean=[0.485, 0.456, 0.406],
@@ -78,3 +78,12 @@ def split_data_into_ssl_strategy(image_dir, mask_dir, out_dir, split_ratio=0.25)
 
 def visualize_pseudo_labels():
     pass
+
+
+if __name__ == "__main__":
+    split_data_into_ssl_strategy(
+        image_dir="../datasets/TrainDataset/image",
+        mask_dir="../datasets/TrainDataset/mask",
+        out_dir="../datasets/SemiDataset50",
+        split_ratio=0.5
+    )

@@ -17,9 +17,9 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=5e-4)
     parser.add_argument("--trade_off_factor", type=float, default=1.5)
     parser.add_argument("--prediction_mode", type=str, default="soft_voting")
-    parser.add_argument("--labelled_image_dir", type=str, default="../datasets/SemiDataset25/labelled/image")
-    parser.add_argument("--unlabelled_image_dir", type=str, default="../datasets/SemiDataset25/unlabelled/image")
-    parser.add_argument("--mask_dir", type=str, default="../datasets/SemiDataset25/labelled/mask")
+    parser.add_argument("--labelled_image_dir", type=str, default="../datasets/SemiDataset50/labelled/image")
+    parser.add_argument("--unlabelled_image_dir", type=str, default="../datasets/SemiDataset50/unlabelled/image")
+    parser.add_argument("--mask_dir", type=str, default="../datasets/SemiDataset50/labelled/mask")
     parser.add_argument("--test_image_dir", type=str, default="../datasets/TestDataset/CVC-300/images")
     parser.add_argument("--test_mask_dir", type=str, default="../datasets/TestDataset/CVC-300/masks")
     parser.add_argument("--out_dir", type=str, default=None)
@@ -65,7 +65,6 @@ if __name__ == "__main__":
         use_cutmix=args.use_cutmix,
         pseudo_label_confidence_threshold=args.pseudo_label_confidence_threshold,
     )
-    print("==== Start training, semi supervised mode ====")
     semi_sup_trainer.fit(
         labelled_dataset,
         unlabelled_dataset,

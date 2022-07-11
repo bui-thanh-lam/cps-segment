@@ -8,7 +8,7 @@ from utils import DEVICE, IGNORE_INDEX
 
 class DiceCELoss(nn.Module):
     """ Mix DiceLoss and Cross Entropy Loss"""
-    def __init__(self, dice_weight=0.25, reduction="mean", ignore_index=IGNORE_INDEX):
+    def __init__(self, dice_weight=1, reduction="mean", ignore_index=IGNORE_INDEX):
         super().__init__()
         self.dice_weight = dice_weight
         self.reduction = reduction
