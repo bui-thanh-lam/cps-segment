@@ -32,7 +32,7 @@ if __name__ == "__main__":
     )
     colon_db = SSLSegmentationDataset(
         image_dir="../datasets/TestDataset/CVC-ColonDB/images",
-        mask_dir="../datasets/TestDataset/CVC-ClinicDB/masks",
+        mask_dir="../datasets/TestDataset/CVC-ColonDB/masks",
         feature_extractor_config=args.model_config,
         input_transform=VAL_INPUT_TRANSFORMS,
         shared_transform=VAL_SHARED_TRANSFORMS,
@@ -57,13 +57,12 @@ if __name__ == "__main__":
         checkpoint_path=args.checkpoint_path,
     )
     print("Evaluate on cvc-300:")
-    print(semi_sup_trainer.evaluate(cvc_300))
+    print(semi_sup_trainer.evaluate(cvc_300, logging_dir=args.out_dir, dataset_alias="cvc-300"))
     print("Evaluate on cvc-clinic:")
-    print(semi_sup_trainer.evaluate(cvc_clinic))
+    print(semi_sup_trainer.evaluate(cvc_clinic, logging_dir=args.out_dir, dataset_alias="cvc-clinic"))
     print("Evaluate on cvc-colon:")
-    print(semi_sup_trainer.evaluate(colon_db))
+    print(semi_sup_trainer.evaluate(colon_db, logging_dir=args.out_dir, dataset_alias="cvc-colon"))
     print("Evaluate on etis:")
-    print(semi_sup_trainer.evaluate(etis))
+    print(semi_sup_trainer.evaluate(etis, logging_dir=args.out_dir, dataset_alias="etis"))
     print("Evaluate on kvasir:")
-    print(semi_sup_trainer.evaluate(kvasir))
-
+    print(semi_sup_trainer.evaluate(kvasir, logging_dir=args.out_dir, dataset_alias="kvasir"))
