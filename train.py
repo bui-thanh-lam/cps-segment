@@ -12,6 +12,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_epochs", type=int, default=5)
     parser.add_argument("--checkpoint_path", type=str, default=None)
     parser.add_argument("--batch_size", type=int, default=4)
+    parser.add_argument("--momentum_factor", type=float, default=0.9)
     parser.add_argument("--pseudo_label_confidence_threshold", type=float, default=0.7)
     parser.add_argument("--learning_rate", type=float, default=6e-5)
     parser.add_argument("--weight_decay", type=float, default=5e-4)
@@ -56,6 +57,7 @@ if __name__ == "__main__":
     semi_sup_trainer = NCPSTrainer(
         model_config=args.model_config,
         n_epochs=args.n_epochs,
+        momentum_factor=args.momentum_factor,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,
         trade_off_factor=args.trade_off_factor,

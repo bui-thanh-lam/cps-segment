@@ -48,12 +48,13 @@ class NCPSTrainer:
             model = self._register_model()
             self.models.append(model.to(self.device))
 
+        self.use_momentum = False
         if momentum_factor > 0:
             self.use_momentum = True
             self.teachers = []
             for _ in range(self.n_models):
                 model = self._register_model()
-                self.teachers.append()
+                self.teachers.append(model.to(self.device))
 
         if checkpoint_path is not None:
             self.load_from_checkpoint(checkpoint_path)
@@ -83,7 +84,6 @@ class NCPSTrainer:
         return model
 
     def _generate_pseudo_labels(self, input):
-
         for j, model in enumerate(self.models):
             # output logit shape: bs * n_classes * h/4 * w/4
             # Huggingface's Segformer always downscales the output height & width by 4 times
@@ -100,6 +100,26 @@ class NCPSTrainer:
                 pseudo_labels = torch.cat((pseudo_labels, p_j), dim=-1)
 
         return pseudo_labels
+
+    def _generate_teacher_pseudo_labels(self, input):
+        # do not update via backpropagation
+        with torch.no_grad():
+            for j, model in enumerate(self.teachers):
+                # output logit shape: bs * n_classes * h/4 * w/4
+                # Huggingface's Segformer always downscales the output height & width by 4 times
+
+                if self.model_type == "torchvision":
+                    p_j = model(input)['out']
+                if self.model_type == "transformers":
+                    p_j = model(input).logits
+                    p_j = F.interpolate(p_j, scale_factor=4, mode='bilinear')
+                p_j = p_j.unsqueeze(-1)
+                if j == 0:
+                    teacher_pseudo_labels = p_j
+                else:
+                    teacher_pseudo_labels = torch.cat((teacher_pseudo_labels, p_j), dim=-1)
+
+        return teacher_pseudo_labels
 
     def _cutmix(self, x_U_1, x_U_2):
         # x_U_1: shape bs * c * h * w
@@ -127,17 +147,10 @@ class NCPSTrainer:
         return x_m, M
 
     def _momentum_update(self):
-        pass
-
-    def load_from_checkpoint(self, checkpoint_path):
-        heads = []
-        for file in os.listdir(checkpoint_path):
-            if file.split('.')[-1] == 'pth':
-                heads.append(file)
-        for i, head in enumerate(heads):
-            _state_dict = torch.load(os.path.join(checkpoint_path, head), self.device)
-            self.models[i].load_state_dict(_state_dict)
-            print(f"Load checkpoint from {os.path.join(checkpoint_path, head)} successfully!")
+        # Update teachers' weights
+        for i in range(self.n_models):
+            for student_weight, teacher_weight in zip(self.models[i].parameters(), self.teachers[i].parameters()):
+                teacher_weight.data = teacher_weight.data * (1.0 - self.momentum_factor) + student_weight.data * self.momentum_factor
 
     def fit(self, labelled_dataset, unlabelled_dataset, val_dataset=None, save_after_one_epoch=False, out_dir=None, logging=True):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.n_labelled_examples_per_batch)
@@ -148,11 +161,16 @@ class NCPSTrainer:
             trade_off_factor=self.trade_off_factor,
             use_cutmix=self.use_cutmix,
             use_multiple_teachers=self.use_multiple_teachers,
+            use_momentum=self.use_momentum,
             pseudo_label_confidence_threshold=self.pseudo_label_confidence_threshold,
         ).to(self.device)
         
         for model in self.models:
             model.train()
+
+        if self.use_momentum:
+            for teacher in self.teachers:
+                teacher.train()
         
         if out_dir is not None:
             if not os.path.exists(out_dir):
@@ -162,14 +180,14 @@ class NCPSTrainer:
         print(info)
         if logging:
             with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                log.write(info)
+                log.write(info+'\n')
         
         for epoch in range(self.n_epochs):
             info = f"======= Epoch {epoch + 1} =======" 
             print(info)
             if logging:
                 with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                    log.write(info)
+                    log.write(info+'\n')
             
             if self.use_cutmix:
                 for (step, [x_L, Y]), (_, x_U_1), (__, x_U_2) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader), enumerate(unlabelled_dataloader)):
@@ -179,25 +197,51 @@ class NCPSTrainer:
                     x_U_2 = x_U_2.to(self.device)
                     Y = Y.to(self.device)
 
-                    # gen pseudo label
+                    # generate pseudo-labels
                     P_L = self._generate_pseudo_labels(x_L)
                     P_m = self._generate_pseudo_labels(x_m)
                     P_U_1 = self._generate_pseudo_labels(x_U_1)
                     P_U_2 = self._generate_pseudo_labels(x_U_2)
-
                     M = M.expand(P_m.shape[:-1])
+                    
+                    if self.use_momentum:
+                        t_P_L = self._generate_teacher_pseudo_labels(x_L)
+                        t_P_U_1 = self._generate_teacher_pseudo_labels(x_U_1)
+                        t_P_U_2 = self._generate_teacher_pseudo_labels(x_U_2)
 
                     # compute loss
-                    loss = criterion(preds_L=P_L, preds_U_1=P_U_1, preds_U_2=P_U_2, preds_m=P_m, targets=Y, M=M)
+                    if self.use_momentum:
+                        loss = criterion(
+                            preds_L=P_L, 
+                            preds_U_1=P_U_1, 
+                            preds_U_2=P_U_2, 
+                            preds_m=P_m, 
+                            targets=Y, 
+                            M=M,
+                            t_preds_L=t_P_L,
+                            t_preds_U_1=t_P_U_1,
+                            t_preds_U_2=t_P_U_2,
+                        )
+                    else:
+                        loss = criterion(
+                            preds_L=P_L, 
+                            preds_U_1=P_U_1, 
+                            preds_U_2=P_U_2, 
+                            preds_m=P_m, 
+                            targets=Y, 
+                            M=M
+                        )
                     if step % 10 == 0:
                         info = f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}"
                         print(info)
                         if logging:
                             with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                                log.write(info)
+                                log.write(info+'\n')
 
                     # update teacher & student weight
                     loss.backward()
+                    if self.use_momentum:
+                        self._momentum_update()
                     for i in range(self.n_models):
                         self.optims[i].step()
                         self.optims[i].zero_grad()
@@ -210,18 +254,43 @@ class NCPSTrainer:
                     # gen pseudo label
                     P_L = self._generate_pseudo_labels(x_L)
                     P_U = self._generate_pseudo_labels(x_U)
+                    if self.use_momentum:
+                        t_P_L = self._generate_teacher_pseudo_labels(x_L)
+                        t_P_U = self._generate_teacher_pseudo_labels(x_U)
 
                     # compute loss
-                    loss = criterion(preds_L=P_L, preds_U=P_U, targets=Y)
+                    if self.use_momentum:
+                        loss = criterion(
+                            preds_L=P_L, 
+                            preds_U_1=P_U_1, 
+                            preds_U_2=P_U_2, 
+                            preds_m=P_m, 
+                            targets=Y, 
+                            M=M,
+                            t_preds_L=t_P_L,
+                            t_preds_U=t_P_U,
+                        )
+                    else:
+                        loss = criterion(
+                            preds_L=P_L, 
+                            preds_U_1=P_U_1, 
+                            preds_U_2=P_U_2, 
+                            preds_m=P_m, 
+                            targets=Y, 
+                            M=M
+                        )
+
                     if step % 10 == 0:
                         info = f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}"
                         print(info)
                         if logging:
                             with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                                log.write(info)
+                                log.write(info+'\n')
 
                     # update teacher & student weight
                     loss.backward()
+                    if self.use_momentum:
+                        self._momentum_update()
                     for i in range(self.n_models):
                         self.optims[i].step()
                         self.optims[i].zero_grad()
@@ -234,29 +303,40 @@ class NCPSTrainer:
                 print(info)
                 if logging:
                     with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                        log.write(info)
+                        log.write(info+'\n')
 
             if save_after_one_epoch == True and out_dir is not None:
                 info = f"Save checkpoint at epoch {epoch+1} to {out_dir}..."
                 print(info)
                 if logging:
                     with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                        log.write(info)
+                        log.write(info+'\n')
                 self.save(out_dir)
 
-    def evaluate(self, val_dataset):
+    def evaluate(self, val_dataset, logging_dir=None, dataset_alias=None):
         val_dataloader = DataLoader(dataset=val_dataset, batch_size=1)
         dice = []
         iou = []
+
         for model in self.models:
             model.eval()
+
+        if self.use_momentum:
+            for teacher in self.teachers:
+                teacher.eval()
+        
+        if self.use_momentum:
+            inference_models = self.teachers
+        else:
+            inference_models = self.models
+
         with torch.no_grad():
             for step, [x_L, Y] in enumerate(val_dataloader):
-                self.models[0].eval()
                 x_L = x_L.to(self.device)
                 Y = Y.to(self.device)
                 preds = None
-                for model in self.models:
+
+                for model in inference_models:
                     if self.model_type == "torchvision":
                        _preds = model(x_L)['out']
                     if self.model_type == "transformers":
@@ -272,6 +352,14 @@ class NCPSTrainer:
                 dice.append(compute_dice(preds, Y))
             mIoU = np.mean(iou)
             mDice = np.mean(dice)
+        
+        if logging_dir is not None:
+            if not os.path.exists(logging_dir):
+                os.makedirs(logging_dir)
+            info = f'======= Evaluate on {dataset_alias} =======\n"mIoU": {mIoU}, "mDice": {mDice}'
+            with open(os.path.join(logging_dir, 'log.txt'), 'a+') as log:
+                log.write(info+'\n')
+        
         return {
             "mIoU": mIoU,
             "mDice": mDice
@@ -280,18 +368,46 @@ class NCPSTrainer:
     def save(self, out_dir):
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
-        for i, model in enumerate(self.models):
+        if self.use_momentum:
+            saved_models = self.teachers
+        else:
+            saved_models = self.models
+        for i, model in enumerate(saved_models):
             torch.save(model.state_dict(), os.path.join(out_dir, f'{self.model_config}_head_{i}.pth'))
+    
+    def load_from_checkpoint(self, checkpoint_path):
+        heads = []
+        for file in os.listdir(checkpoint_path):
+            if file.split('.')[-1] == 'pth':
+                heads.append(file)
+        for i, head in enumerate(heads):
+            _state_dict = torch.load(os.path.join(checkpoint_path, head), self.device)
+            self.models[i].load_state_dict(_state_dict)
+            if self.use_momentum:
+                self.teachers[i].load_state_dict(_state_dict)
+            print(f"Load checkpoint from {os.path.join(checkpoint_path, head)} successfully!")
 
     def predict(self, test_dataset, out_dir, mode='soft_voting'):
         assert mode in ["soft_voting", "max_confidence",
                         "single"], "Mode must be either soft_voting, max_confidence or single"
         assert test_dataset.return_image_name == True, "test_dataset.return_image_name must be True"
+        
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
+        
         test_dataloader = DataLoader(dataset=test_dataset, batch_size=1)
+        
         for model in self.models:
             model.eval()
+        if self.use_momentum:
+            for teacher in self.teachers:
+                teacher.eval()
+        
+        if self.use_momentum:
+            inference_models = self.teachers
+        else:
+            inference_models = self.models
+        
         with torch.no_grad():
             if test_dataset.is_unlabelled:
                 for step, [x, image_name] in enumerate(test_dataloader):
@@ -304,7 +420,7 @@ class NCPSTrainer:
                             preds = self.models[0](x).logits
                     if mode == "max_confidence":
                         preds = None
-                        for model in self.models:
+                        for model in inference_models:
                             if self.model_type == "torchvision":
                                 _preds = model(x)['out']
                             if self.model_type == "transformers":
@@ -315,7 +431,7 @@ class NCPSTrainer:
                                 preds = torch.maximum(preds, _preds)
                     if mode == "soft_voting":
                         preds = None
-                        for model in self.models:
+                        for model in inference_models:
                             if self.model_type == "torchvision":
                                 _preds = model(x)['out']
                             if self.model_type == "transformers":
