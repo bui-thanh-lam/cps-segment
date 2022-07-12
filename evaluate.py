@@ -66,4 +66,3 @@ if __name__ == "__main__":
     print(semi_sup_trainer.evaluate(etis, logging_dir=args.out_dir, dataset_alias="etis"))
     print("Evaluate on kvasir:")
     print(semi_sup_trainer.evaluate(kvasir, logging_dir=args.out_dir, dataset_alias="kvasir"))
-

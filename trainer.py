@@ -84,6 +84,7 @@ class NCPSTrainer:
         return model
 
     def _generate_pseudo_labels(self, input):
+
         for j, model in enumerate(self.models):
             # output logit shape: bs * n_classes * h/4 * w/4
             # Huggingface's Segformer always downscales the output height & width by 4 times
@@ -155,7 +156,7 @@ class NCPSTrainer:
     def fit(self, labelled_dataset, unlabelled_dataset, val_dataset=None, save_after_one_epoch=False, out_dir=None, logging=True):
         labelled_dataloader = DataLoader(dataset=labelled_dataset, batch_size=self.n_labelled_examples_per_batch)
         unlabelled_dataloader = DataLoader(dataset=unlabelled_dataset, batch_size=self.n_labelled_examples_per_batch)
-        
+
         criterion = CombinedCPSLoss(
             n_models=self.n_models,
             trade_off_factor=self.trade_off_factor,
@@ -332,6 +333,7 @@ class NCPSTrainer:
 
         with torch.no_grad():
             for step, [x_L, Y] in enumerate(val_dataloader):
+                self.models[0].eval()
                 x_L = x_L.to(self.device)
                 Y = Y.to(self.device)
                 preds = None
@@ -407,7 +409,7 @@ class NCPSTrainer:
             inference_models = self.teachers
         else:
             inference_models = self.models
-        
+
         with torch.no_grad():
             if test_dataset.is_unlabelled:
                 for step, [x, image_name] in enumerate(test_dataloader):
