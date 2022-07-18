@@ -45,7 +45,10 @@ class NCPSTrainer:
         self.device = device
 
         for _ in range(self.n_models):
-            model = self._register_model()
+            if checkpoint_path is not None:
+                model = self._register_model(load_pretrained=False)
+            else:
+                model = self._register_model(load_pretrained=True)
             self.models.append(model.to(self.device))
 
         self.use_momentum = False
@@ -64,21 +67,21 @@ class NCPSTrainer:
                 torch.optim.AdamW(self.models[i].parameters(), lr=learning_rate, weight_decay=weight_decay))
             self.schedulers.append(torch.optim.lr_scheduler.CosineAnnealingLR(self.optims[i], T_max=self.n_epochs))
 
-    def _register_model(self):
+    def _register_model(self, load_pretrained=True):
         if self.model_config == "segformer_b0":
-            model = segformer_b0()
+            model = segformer_b0(load_pretrained)
         if self.model_config == "segformer_b1":
-            model = segformer_b1()
+            model = segformer_b1(load_pretrained)
         if self.model_config == "segformer_b2":
-            model = segformer_b2()
+            model = segformer_b2(load_pretrained)
         if self.model_config == "segformer_b3":
-            model = segformer_b3()
-        if self.model_config == "deeplabv3_resnet34":
-            model = deeplabv3_resnet34()
-        if self.model_config == "deeplabv3_resnet50":
-            model = deeplabv3_resnet50()
-        if self.model_config == "deeplabv3_resnet101":
-            model = deeplabv3_resnet101()
+            model = segformer_b3(load_pretrained)
+        if self.model_config == "deeplabv3_rn34":
+            model = deeplabv3_resnet34(pretrained=load_pretrained)
+        if self.model_config == "deeplabv3_rn50":
+            model = deeplabv3_resnet50(pretrained=load_pretrained)
+        if self.model_config == "deeplabv3_rn101":
+            model = deeplabv3_resnet101(pretrained=load_pretrained)
         if "segformer" in self.model_config: self.model_type = "transformers"
         if "deeplab" in self.model_config: self.model_type = "torchvision"
         return model
@@ -88,7 +91,7 @@ class NCPSTrainer:
         for j, model in enumerate(self.models):
             # output logit shape: bs * n_classes * h/4 * w/4
             # Huggingface's Segformer always downscales the output height & width by 4 times
-
+            model.eval()
             if self.model_type == "torchvision":
                 p_j = model(input)['out']
             if self.model_type == "transformers":
@@ -99,7 +102,7 @@ class NCPSTrainer:
                 pseudo_labels = p_j
             else:
                 pseudo_labels = torch.cat((pseudo_labels, p_j), dim=-1)
-
+            model.train()
         return pseudo_labels
 
     def _generate_teacher_pseudo_labels(self, input):
@@ -108,6 +111,7 @@ class NCPSTrainer:
             for j, model in enumerate(self.teachers):
                 # output logit shape: bs * n_classes * h/4 * w/4
                 # Huggingface's Segformer always downscales the output height & width by 4 times
+                model.eval()
 
                 if self.model_type == "torchvision":
                     p_j = model(input)['out']
@@ -119,6 +123,7 @@ class NCPSTrainer:
                     teacher_pseudo_labels = p_j
                 else:
                     teacher_pseudo_labels = torch.cat((teacher_pseudo_labels, p_j), dim=-1)
+                model.train()
 
         return teacher_pseudo_labels
 
@@ -263,22 +268,16 @@ class NCPSTrainer:
                     if self.use_momentum:
                         loss = criterion(
                             preds_L=P_L, 
-                            preds_U_1=P_U_1, 
-                            preds_U_2=P_U_2, 
-                            preds_m=P_m, 
+                            preds_U=P_U, 
                             targets=Y, 
-                            M=M,
                             t_preds_L=t_P_L,
                             t_preds_U=t_P_U,
                         )
                     else:
                         loss = criterion(
                             preds_L=P_L, 
-                            preds_U_1=P_U_1, 
-                            preds_U_2=P_U_2, 
-                            preds_m=P_m, 
+                            preds_U=P_U, 
                             targets=Y, 
-                            M=M
                         )
 
                     if step % 10 == 0:
@@ -314,7 +313,7 @@ class NCPSTrainer:
                         log.write(info+'\n')
                 self.save(out_dir)
 
-    def evaluate(self, val_dataset, logging_dir=None, dataset_alias=None):
+    def evaluate(self, val_dataset, logging_dir=None, dataset_alias=None, mode='soft_voting'):
         val_dataloader = DataLoader(dataset=val_dataset, batch_size=1)
         dice = []
         iou = []
@@ -333,20 +332,36 @@ class NCPSTrainer:
 
         with torch.no_grad():
             for step, [x_L, Y] in enumerate(val_dataloader):
-                self.models[0].eval()
                 x_L = x_L.to(self.device)
                 Y = Y.to(self.device)
                 preds = None
-
-                for model in inference_models:
+                if mode == "single":
                     if self.model_type == "torchvision":
-                       _preds = model(x_L)['out']
+                        preds = inference_models[0](x_L)['out']
                     if self.model_type == "transformers":
-                        _preds = model(x_L).logits
-                    if preds is None:
-                        preds = _preds
-                    else:
-                        preds += _preds
+                        preds = inference_models[0](x_L).logits
+                if mode == "max_confidence":
+                    preds = None
+                    for model in inference_models:
+                        if self.model_type == "torchvision":
+                            _preds = model(x_L)['out']
+                        if self.model_type == "transformers":
+                            _preds = model(x_L).logits
+                        if preds is None:
+                            preds = _preds
+                        else:
+                            preds = torch.maximum(preds, _preds)
+                if mode == "soft_voting":
+                    preds = None
+                    for model in inference_models:
+                        if self.model_type == "torchvision":
+                            _preds = model(x_L)['out']
+                        if self.model_type == "transformers":
+                            _preds = model(x_L).logits
+                        if preds is None:
+                            preds = _preds
+                        else:
+                            preds += _preds
                 if self.model_type == "transformers":
                     preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
                 preds = torch.argmax(preds, dim=1).squeeze()
