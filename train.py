@@ -6,10 +6,11 @@ from utils import *
 if __name__ == "__main__":
     torch.cuda.empty_cache()
     parser = argparse.ArgumentParser(description="Train n-CPS")
-    parser.add_argument("--model_config", type=str, help="Configuration of model architecture")
+    # parser.add_argument("--model_config", type=str, help="Configuration of model architecture")
+    parser.add_argument("--model_config", type=str, help="Configuration of model architecture", default="segformer_b0")
     parser.add_argument("--use_cutmix", type=bool, default=True, help="Use CutMix during training")
     parser.add_argument("--use_multiple_teachers", type=bool, default=True, help="Use teacher ensemble")
-    parser.add_argument("--n_epochs", type=int, default=5, help="Num epochs to train")
+    parser.add_argument("--n_steps", type=int, default=5000, help="Number of steps to train")
     parser.add_argument("--checkpoint_path", type=str, default=None, help="Checkpoint dir, use to resume training")
     parser.add_argument("--batch_size", type=int, default=4, help="Batch size. If use_cutmix is True, real batch size is 2x than this option")
     parser.add_argument("--momentum_factor", type=float, default=0.8, help="Momentum factor. Set to 0 to disable this feature")
@@ -23,7 +24,8 @@ if __name__ == "__main__":
     parser.add_argument("--mask_dir", type=str, default="../datasets/SemiDataset50/labelled/mask")
     parser.add_argument("--test_image_dir", type=str, default="../datasets/TestDataset/CVC-300/images")
     parser.add_argument("--test_mask_dir", type=str, default="../datasets/TestDataset/CVC-300/masks")
-    parser.add_argument("--out_dir", type=str, default=None)
+    # parser.add_argument("--out_dir", type=str, default=None)
+    parser.add_argument("--out_dir", type=str, default="../checkpoints/etc")
     args = parser.parse_args()
 
     _test_set = SSLSegmentationDataset(
@@ -50,13 +52,12 @@ if __name__ == "__main__":
         image_dir=args.labelled_image_dir,
         mask_dir=args.mask_dir,
         feature_extractor_config=args.model_config,
-        input_transform=TRAIN_INPUT_TRANSFORMS,
         target_transform=TRAIN_TARGET_TRANSFORMS,
         shared_transform=TRAIN_SHARED_TRANSFORMS,
     )
     semi_sup_trainer = NCPSTrainer(
         model_config=args.model_config,
-        n_epochs=args.n_epochs,
+        n_steps=args.n_steps,
         momentum_factor=args.momentum_factor,
         learning_rate=args.learning_rate,
         weight_decay=args.weight_decay,

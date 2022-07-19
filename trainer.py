@@ -15,7 +15,7 @@ class NCPSTrainer:
 
     def __init__(
         self,
-        n_epochs=5,
+        n_steps=5,
         device=DEVICE,
         n_models=3,
         model_config=None,
@@ -37,7 +37,7 @@ class NCPSTrainer:
         self.schedulers = []
         self.model_config = model_config
         self.n_labelled_examples_per_batch = n_labelled_examples_per_batch
-        self.n_epochs = n_epochs
+        self.n_steps = n_steps
         self.use_cutmix = use_cutmix
         self.momentum_factor = momentum_factor
         self.trade_off_factor = trade_off_factor
@@ -56,7 +56,10 @@ class NCPSTrainer:
             self.use_momentum = True
             self.teachers = []
             for _ in range(self.n_models):
-                model = self._register_model()
+                if checkpoint_path is not None:
+                    model = self._register_model(load_pretrained=False)
+                else:
+                    model = self._register_model(load_pretrained=True)
                 self.teachers.append(model.to(self.device))
 
         if checkpoint_path is not None:
@@ -65,7 +68,7 @@ class NCPSTrainer:
         for i in range(self.n_models):
             self.optims.append(
                 torch.optim.AdamW(self.models[i].parameters(), lr=learning_rate, weight_decay=weight_decay))
-            self.schedulers.append(torch.optim.lr_scheduler.CosineAnnealingLR(self.optims[i], T_max=self.n_epochs))
+            self.schedulers.append(torch.optim.lr_scheduler.CosineAnnealingLR(self.optims[i], T_max=self.n_steps // 200))
 
     def _register_model(self, load_pretrained=True):
         if self.model_config == "segformer_b0":
@@ -188,130 +191,114 @@ class NCPSTrainer:
             with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
                 log.write(info+'\n')
         
-        for epoch in range(self.n_epochs):
-            info = f"======= Epoch {epoch + 1} =======" 
-            print(info)
-            if logging:
-                with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                    log.write(info+'\n')
-            
+        # training procedure
+        for step in range(self.n_steps):
             if self.use_cutmix:
-                for (step, [x_L, Y]), (_, x_U_1), (__, x_U_2) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader), enumerate(unlabelled_dataloader)):
-                    x_m, M = self._cutmix(x_U_1, x_U_2)
-                    x_L = x_L.to(self.device)
-                    x_U_1 = x_U_1.to(self.device)
-                    x_U_2 = x_U_2.to(self.device)
-                    Y = Y.to(self.device)
+                # load data from dataloader
+                x_L, Y = next(iter(labelled_dataloader))
+                x_U_1 = next(iter(unlabelled_dataloader))
+                x_U_2 = next(iter(unlabelled_dataloader))
 
-                    # generate pseudo-labels
-                    P_L = self._generate_pseudo_labels(x_L)
-                    P_m = self._generate_pseudo_labels(x_m)
-                    P_U_1 = self._generate_pseudo_labels(x_U_1)
-                    P_U_2 = self._generate_pseudo_labels(x_U_2)
-                    M = M.expand(P_m.shape[:-1])
-                    
-                    if self.use_momentum:
-                        t_P_L = self._generate_teacher_pseudo_labels(x_L)
-                        t_P_U_1 = self._generate_teacher_pseudo_labels(x_U_1)
-                        t_P_U_2 = self._generate_teacher_pseudo_labels(x_U_2)
+                x_m, M = self._cutmix(x_U_1, x_U_2)
+                x_L = x_L.to(self.device)
+                x_U_1 = x_U_1.to(self.device)
+                x_U_2 = x_U_2.to(self.device)
+                Y = Y.to(self.device)
 
-                    # compute loss
-                    if self.use_momentum:
-                        loss = criterion(
-                            preds_L=P_L, 
-                            preds_U_1=P_U_1, 
-                            preds_U_2=P_U_2, 
-                            preds_m=P_m, 
-                            targets=Y, 
-                            M=M,
-                            t_preds_L=t_P_L,
-                            t_preds_U_1=t_P_U_1,
-                            t_preds_U_2=t_P_U_2,
-                        )
-                    else:
-                        loss = criterion(
-                            preds_L=P_L, 
-                            preds_U_1=P_U_1, 
-                            preds_U_2=P_U_2, 
-                            preds_m=P_m, 
-                            targets=Y, 
-                            M=M
-                        )
-                    if step % 10 == 0:
-                        info = f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}"
-                        print(info)
-                        if logging:
-                            with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                                log.write(info+'\n')
+                # generate pseudo-labels
+                P_L = self._generate_pseudo_labels(x_L)
+                P_m = self._generate_pseudo_labels(x_m)
+                P_U_1 = self._generate_pseudo_labels(x_U_1)
+                P_U_2 = self._generate_pseudo_labels(x_U_2)
+                M = M.expand(P_m.shape[:-1])
+                
+                if self.use_momentum:
+                    t_P_L = self._generate_teacher_pseudo_labels(x_L)
+                    t_P_U_1 = self._generate_teacher_pseudo_labels(x_U_1)
+                    t_P_U_2 = self._generate_teacher_pseudo_labels(x_U_2)
+                    loss = criterion(
+                        preds_L=P_L, 
+                        preds_U_1=P_U_1, 
+                        preds_U_2=P_U_2, 
+                        preds_m=P_m, 
+                        targets=Y, 
+                        M=M,
+                        t_preds_L=t_P_L,
+                        t_preds_U_1=t_P_U_1,
+                        t_preds_U_2=t_P_U_2,
+                    )
+                else:
+                    loss = criterion(
+                        preds_L=P_L, 
+                        preds_U_1=P_U_1, 
+                        preds_U_2=P_U_2, 
+                        preds_m=P_m, 
+                        targets=Y, 
+                        M=M
+                    )
+            else:       # no CutMix
+                # load data from dataloader
+                x_L = next(iter(labelled_dataloader))
+                x_U = next(iter(unlabelled_dataloader))
 
-                    # update teacher & student weight
-                    loss.backward()
-                    if self.use_momentum:
-                        self._momentum_update()
-                    for i in range(self.n_models):
-                        self.optims[i].step()
-                        self.optims[i].zero_grad()
-            else:
-                for (step, [x_L, Y]), (_, x_U) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader)):
-                    x_L = x_L.to(self.device)
-                    x_U = x_U.to(self.device)
-                    Y = Y.to(self.device)
+                x_L = x_L.to(self.device)
+                x_U = x_U.to(self.device)
+                Y = Y.to(self.device)
 
-                    # gen pseudo label
-                    P_L = self._generate_pseudo_labels(x_L)
-                    P_U = self._generate_pseudo_labels(x_U)
-                    if self.use_momentum:
-                        t_P_L = self._generate_teacher_pseudo_labels(x_L)
-                        t_P_U = self._generate_teacher_pseudo_labels(x_U)
+                # gen pseudo label
+                P_L = self._generate_pseudo_labels(x_L)
+                P_U = self._generate_pseudo_labels(x_U)
+                if self.use_momentum:
+                    t_P_L = self._generate_teacher_pseudo_labels(x_L)
+                    t_P_U = self._generate_teacher_pseudo_labels(x_U)
 
-                    # compute loss
-                    if self.use_momentum:
-                        loss = criterion(
-                            preds_L=P_L, 
-                            preds_U=P_U, 
-                            targets=Y, 
-                            t_preds_L=t_P_L,
-                            t_preds_U=t_P_U,
-                        )
-                    else:
-                        loss = criterion(
-                            preds_L=P_L, 
-                            preds_U=P_U, 
-                            targets=Y, 
-                        )
+                    loss = criterion(
+                        preds_L=P_L, 
+                        preds_U=P_U, 
+                        targets=Y, 
+                        t_preds_L=t_P_L,
+                        t_preds_U=t_P_U,
+                    )
+                else:
+                    loss = criterion(
+                        preds_L=P_L, 
+                        preds_U=P_U, 
+                        targets=Y, 
+                    )
 
-                    if step % 10 == 0:
-                        info = f"[INFO] [TRAIN] mode: semi-supervised, epoch: {epoch + 1}, step: {step}, loss: {loss.item():.5f}"
-                        print(info)
-                        if logging:
-                            with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                                log.write(info+'\n')
-
-                    # update teacher & student weight
-                    loss.backward()
-                    if self.use_momentum:
-                        self._momentum_update()
-                    for i in range(self.n_models):
-                        self.optims[i].step()
-                        self.optims[i].zero_grad()
-
+            # update teacher & student weight
+            loss.backward()
+            if self.use_momentum:
+                self._momentum_update()
             for i in range(self.n_models):
-                self.schedulers[i].step()
+                self.optims[i].step()
+                self.optims[i].zero_grad()
 
-            if val_dataset is not None:
-                info = f"======= Evaluate on CVC-300 =======\n{self.evaluate(val_dataset)}"
+            if step % 10 == 0:
+                info = f"[INFO] [TRAIN] mode: semi-supervised, step: {step}, loss: {loss.item():.5f}"
                 print(info)
                 if logging:
                     with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
                         log.write(info+'\n')
 
-            if save_after_one_epoch == True and out_dir is not None:
-                info = f"Save checkpoint at epoch {epoch+1} to {out_dir}..."
-                print(info)
-                if logging:
-                    with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
-                        log.write(info+'\n')
-                self.save(out_dir)
+            if step % 200 == 0 and step // 200 > 0:
+                for i in range(self.n_models):
+                    self.schedulers[i].step()
+
+                if val_dataset is not None:
+                    info = f"======= Evaluate on CVC-300 =======\n{self.evaluate(val_dataset)}"
+                    print(info)
+                    if logging:
+                        with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
+                            log.write(info+'\n')
+
+                if save_after_one_epoch == True and out_dir is not None:
+                    info = f"Save checkpoint at step {step} to {out_dir}..."
+                    print(info)
+                    if logging:
+                        with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
+                            log.write(info+'\n')
+                    self.save(out_dir)
 
     def evaluate(self, val_dataset, logging_dir=None, dataset_alias=None, mode='soft_voting'):
         val_dataloader = DataLoader(dataset=val_dataset, batch_size=1)
