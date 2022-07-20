@@ -54,8 +54,9 @@ class CombinedCPSLoss(nn.Module):
 
     def _prune_pseudo_label_by_threshold(self, pseudo_labels):
         # pseudo_labels: shape bs * n_classes * h * w * n_models
-        _pseudo_labels = torch.max(pseudo_labels, dim=1)[0]
-        _pseudo_labels = (torch.exp(_pseudo_labels) >= self.pseudo_label_confidence_threshold).long()
+        _pseudo_labels = F.softmax(pseudo_labels, dim=1)
+        _pseudo_labels = torch.max(_pseudo_labels, dim=1)[0]
+        _pseudo_labels = (_pseudo_labels >= self.pseudo_label_confidence_threshold).long()
         _pseudo_labels = _pseudo_labels * (torch.argmax(pseudo_labels, dim=1) + 1) - 1
         # _pseudo_labels: shape bs * h * w * n_models
         return _pseudo_labels
@@ -210,7 +211,8 @@ class CombinedCPSLoss(nn.Module):
                         cps_U_loss += self.loss(P_U_l, Y_U_r) + self.loss(P_U_r, Y_U_l)
                         cps_L_loss += self.loss(P_L_l, Y_L_r) + self.loss(P_L_r, Y_L_l)
                 cps_loss = cps_U_loss + cps_L_loss
-
+        if torch.isnan(cps_loss): cps_loss.zero_()
+        
         # compute supervision loss
         for j in range(self.n_models):
             P_ce_j = preds_L[:, :, :, :, j]

@@ -77,17 +77,16 @@ class NCPSTrainer:
         if self.model_config == "segformer_b3":
             model = segformer_b3(load_pretrained)
         if self.model_config == "deeplabv3_rn34":
-            model = deeplabv3_resnet34(pretrained=load_pretrained)
+            model = deeplabv3_resnet34()
         if self.model_config == "deeplabv3_rn50":
-            model = deeplabv3_resnet50(pretrained=load_pretrained)
+            model = deeplabv3_resnet50()
         if self.model_config == "deeplabv3_rn101":
-            model = deeplabv3_resnet101(pretrained=load_pretrained)
+            model = deeplabv3_resnet101()
         if "segformer" in self.model_config: self.model_type = "transformers"
         if "deeplab" in self.model_config: self.model_type = "torchvision"
         return model
 
     def _generate_pseudo_labels(self, input):
-
         for j, model in enumerate(self.models):
             # output logit shape: bs * n_classes * h/4 * w/4
             # Huggingface's Segformer always downscales the output height & width by 4 times
@@ -196,7 +195,10 @@ class NCPSTrainer:
                     log.write(info+'\n')
             
             if self.use_cutmix:
-                for (step, [x_L, Y]), (_, x_U_1), (__, x_U_2) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader), enumerate(unlabelled_dataloader)):
+                for step, [x_L, Y] in enumerate(labelled_dataloader):
+                    x_U_1 = next(iter(unlabelled_dataloader))
+                    x_U_2 = next(iter(unlabelled_dataloader))
+
                     x_m, M = self._cutmix(x_U_1, x_U_2)
                     x_L = x_L.to(self.device)
                     x_U_1 = x_U_1.to(self.device)
@@ -252,7 +254,9 @@ class NCPSTrainer:
                         self.optims[i].step()
                         self.optims[i].zero_grad()
             else:
-                for (step, [x_L, Y]), (_, x_U) in zip(enumerate(labelled_dataloader), enumerate(unlabelled_dataloader)):
+                for step, [x_L, Y] in enumerate(labelled_dataloader):
+                    x_U = next(iter(unlabelled_dataloader))
+
                     x_L = x_L.to(self.device)
                     x_U = x_U.to(self.device)
                     Y = Y.to(self.device)

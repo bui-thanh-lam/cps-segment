@@ -11,10 +11,6 @@ IMAGE_SIZE = 340
 DEVICE = torch.device('cuda')
 IGNORE_INDEX = -1
 TRAIN_INPUT_TRANSFORMS = T.Compose([
-    T.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    ),
     T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
 ])
 TRAIN_SHARED_TRANSFORMS = T.Compose([
@@ -25,12 +21,7 @@ TRAIN_SHARED_TRANSFORMS = T.Compose([
     T.RandomHorizontalFlip(),
 ])
 TRAIN_TARGET_TRANSFORMS = None
-VAL_INPUT_TRANSFORMS = T.Compose([
-    T.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    )
-])
+VAL_INPUT_TRANSFORMS = None
 VAL_SHARED_TRANSFORMS = T.Compose([
     T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
 ])

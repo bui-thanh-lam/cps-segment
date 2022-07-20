@@ -75,6 +75,7 @@ class SSLSegmentationDataset(Dataset):
             else:
                 img = np.asarray(img)
                 img = torch.FloatTensor(img).permute(2, 0, 1)
+                img = F.normalize(img, mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             if self.input_transform is not None:
                 img = self.input_transform(img)
             if self.return_image_name:
