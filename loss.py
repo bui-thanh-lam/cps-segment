@@ -38,7 +38,8 @@ class CombinedCPSLoss(nn.Module):
         self.pseudo_label_confidence_threshold = pseudo_label_confidence_threshold
         self.n_models = n_models
         self.trade_off_factor = trade_off_factor
-        self.loss = DiceCELoss()
+        # self.loss = DiceCELoss()
+        self.loss = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
         self.use_cutmix = use_cutmix
         self.use_multiple_teachers = use_multiple_teachers
         self.use_momentum = use_momentum
@@ -70,18 +71,17 @@ class CombinedCPSLoss(nn.Module):
         preds_U_2=None, 
         preds_m=None, 
         M=None,
-        t_preds_L=None, 
         t_preds_U=None, 
         t_preds_U_1=None, 
         t_preds_U_2=None, 
     ):
         # preds: bs * class * w * h * n_models
         # targets: bs * 1 * w * h
+        ce_loss = torch.zeros(1).to(DEVICE)
+        cps_loss = torch.zeros(1).to(DEVICE)
         if self.use_cutmix:
             if preds_U_1 is None or preds_U_2 is None or preds_m is None:
                 raise ValueError("preds_U_1, preds_U_2, preds_m and M must be provided when use_cutmix=True")
-            ce_loss = torch.zeros(1).to(DEVICE)
-            cps_loss = torch.zeros(1).to(DEVICE)
             
             if self.use_multiple_teachers:
                 if self.use_momentum:
@@ -141,47 +141,31 @@ class CombinedCPSLoss(nn.Module):
         else:
             if preds_L is None or preds_U is None:
                 raise ValueError("preds_U and preds_L must be provided when use_cutmix=False")
-                
-            cps_U_loss = torch.zeros(1).to(DEVICE)
-            cps_L_loss = torch.zeros(1).to(DEVICE)
-            ce_loss = torch.zeros(1).to(DEVICE)
 
             if self.use_multiple_teachers:
                 if self.use_momentum:
                     Y_U = self._multiple_teacher_correction(t_preds_U)
-                    Y_L = self._multiple_teacher_correction(t_preds_L)
                 else:
                     Y_U = self._multiple_teacher_correction(preds_U)
-                    Y_L = self._multiple_teacher_correction(preds_L)
                 for j in range(self.n_models):
                     P_U_j = preds_U[:, :, :, :, j]
-                    P_L_j = preds_L[:, :, :, :, j]
                     # disable gradient passing
                     with torch.no_grad():
                         Y_U_j = Y_U[:, :, :, :, j]
-                        Y_L_j = Y_L[:, :, :, :, j]
                         if self.pseudo_label_confidence_threshold <= 0.5:
                             Y_U_j = torch.argmax(Y_U_j, dim=1)
-                            Y_L_j = torch.argmax(Y_L_j, dim=1)
                         else:
                             Y_U_j = self._prune_pseudo_label_by_threshold(Y_U_j)
-                            Y_L_j = self._prune_pseudo_label_by_threshold(Y_L_j)
-                    cps_U_loss += self.loss(P_U_j, Y_U_j)
-                    cps_L_loss += self.loss(P_L_j, Y_L_j)
-                cps_loss = cps_U_loss + cps_L_loss
+                    cps_loss += self.loss(P_U_j, Y_U_j)
 
             else:
                 for r in range(self.n_models):
                     for l in range(r):
                         P_U_l = preds_U[:, :, :, :, l]
                         P_U_r = preds_U[:, :, :, :, r]
-                        P_L_l = preds_L[:, :, :, :, l]
-                        P_L_r = preds_L[:, :, :, :, r]
                         if self.use_momentum:
                             Y_U_l = t_preds_U[:, :, :, :, l]
                             Y_U_r = t_preds_U[:, :, :, :, r]
-                            Y_L_l = t_preds_L[:, :, :, :, l]
-                            Y_L_r = t_preds_L[:, :, :, :, r]
                         # compute cps loss, disable gradient passing
                         with torch.no_grad():
                             # if threshold <= 0.5, don't use threshold clipping
@@ -189,29 +173,21 @@ class CombinedCPSLoss(nn.Module):
                                 if self.use_momentum:
                                     Y_U_l = torch.argmax(Y_U_l, dim=1)
                                     Y_U_r = torch.argmax(Y_U_r, dim=1)
-                                    Y_L_l = torch.argmax(Y_L_l, dim=1)
-                                    Y_L_r = torch.argmax(Y_L_r, dim=1)
                                 else:
                                     Y_U_l = torch.argmax(P_U_l, dim=1)
                                     Y_U_r = torch.argmax(P_U_r, dim=1)
-                                    Y_L_l = torch.argmax(P_L_l, dim=1)
-                                    Y_L_r = torch.argmax(P_L_r, dim=1)
                             # otherwise, only concern with pseudo labels which have high confidence
                             else:
                                 if self.use_momentum:
                                     Y_U_l = self._prune_pseudo_label_by_threshold(Y_U_l)
                                     Y_U_r = self._prune_pseudo_label_by_threshold(Y_U_r)
-                                    Y_L_l = self._prune_pseudo_label_by_threshold(Y_L_l)
-                                    Y_L_r = self._prune_pseudo_label_by_threshold(Y_L_r)
                                 else:
                                     Y_U_l = self._prune_pseudo_label_by_threshold(P_U_l)
                                     Y_U_r = self._prune_pseudo_label_by_threshold(P_U_r)
-                                    Y_L_l = self._prune_pseudo_label_by_threshold(P_L_l)
-                                    Y_L_r = self._prune_pseudo_label_by_threshold(P_L_r)
-                        cps_U_loss += self.loss(P_U_l, Y_U_r) + self.loss(P_U_r, Y_U_l)
-                        cps_L_loss += self.loss(P_L_l, Y_L_r) + self.loss(P_L_r, Y_L_l)
-                cps_loss = cps_U_loss + cps_L_loss
-        if torch.isnan(cps_loss): cps_loss.zero_()
+                        cps_loss += self.loss(P_U_l, Y_U_r) + self.loss(P_U_r, Y_U_l)
+        # if all pseudo labels are ignored
+        if torch.isnan(cps_loss): 
+            cps_loss.zero_()
         
         # compute supervision loss
         for j in range(self.n_models):

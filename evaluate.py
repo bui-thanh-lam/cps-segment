@@ -7,13 +7,10 @@ from utils import *
 if __name__ == "__main__":
     torch.cuda.empty_cache()
     parser = argparse.ArgumentParser(description="Evaluate n-CPS")
-    parser.add_argument("--model_config", type=str)
-    parser.add_argument("--use_cutmix", type=bool, default=False)
-    parser.add_argument("--checkpoint_path", type=str, default=None)
-    parser.add_argument("--prediction_mode", type=str, default="soft_voting")
-    parser.add_argument("--test_image_dir", type=str, default="../datasets/TestDataset/CVC-300/images")
-    parser.add_argument("--test_mask_dir", type=str, default="../datasets/TestDataset/CVC-300/masks")
-    parser.add_argument("--out_dir", type=str, default=None)
+    parser.add_argument("--model_config", type=str, help="Model config. For example: segformer_b0")
+    parser.add_argument("--checkpoint_path", type=str, help="The trained model dir")
+    parser.add_argument("--prediction_mode", type=str, default="soft_voting", help="Ensembling mode. Set to 'soft_voting', 'max_confidence' or 'single'")
+    parser.add_argument("--out_dir", type=str, default=None, help="Where to save the log")
     args = parser.parse_args()
 
     cvc_300 = SSLSegmentationDataset(

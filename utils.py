@@ -12,19 +12,23 @@ DEVICE = torch.device('cuda')
 IGNORE_INDEX = -1
 TRAIN_INPUT_TRANSFORMS = T.Compose([
     T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
+    T.ColorJitter(
+        brightness=0.1,
+        contrast=0.2,
+    ),
 ])
 TRAIN_SHARED_TRANSFORMS = T.Compose([
     T.RandomResizedCrop(
         (IMAGE_SIZE, IMAGE_SIZE),
-        scale=(0.5, 2)
+        scale=(0.75, 1.33)
     ),
     T.RandomHorizontalFlip(),
 ])
 TRAIN_TARGET_TRANSFORMS = None
-VAL_INPUT_TRANSFORMS = None
-VAL_SHARED_TRANSFORMS = T.Compose([
+VAL_INPUT_TRANSFORMS = T.Compose([
     T.Resize((IMAGE_SIZE, IMAGE_SIZE)),
 ])
+VAL_SHARED_TRANSFORMS = None
 VAL_TARGET_TRANSFORMS = None
 
 
@@ -70,6 +74,6 @@ if __name__ == "__main__":
     split_data_into_ssl_strategy(
         image_dir="../datasets/TrainDataset/image",
         mask_dir="../datasets/TrainDataset/mask",
-        out_dir="../datasets/SemiDataset6",
-        split_ratio=0.0625
+        out_dir="../datasets/SemiDataset80",
+        split_ratio=0.8
     )

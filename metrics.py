@@ -1,7 +1,3 @@
-# pred: shape h * w
-# target: shape h * w
-
-
 def compute_iou(outputs, labels):
     SMOOTH = 1e-6
     outputs = outputs.view(-1)

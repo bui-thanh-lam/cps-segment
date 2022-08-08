@@ -1,4 +1,5 @@
 from transformers import SegformerForSemanticSegmentation, SegformerConfig
+import torchinfo
 
 
 def _segformer(config_name, load_pretrained=True):

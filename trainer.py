@@ -1,3 +1,4 @@
+import copy
 import random
 import torch
 import torch.nn.functional as F
@@ -20,7 +21,7 @@ class NCPSTrainer:
         n_models=3,
         model_config=None,
         checkpoint_path=None,
-        momentum_factor=0,
+        momentum_factor=0.9,
         trade_off_factor=3,
         n_labelled_examples_per_batch=4,
         pseudo_label_confidence_threshold=0.7,
@@ -28,6 +29,8 @@ class NCPSTrainer:
         weight_decay=5e-6,
         use_multiple_teachers=False,
         use_cutmix=False,
+        use_linear_momentum_scheduler=True,
+        use_linear_threshold_scheduler=None,
     ) -> None:
         assert n_models > 1, "number of models should be larger than 1"
         self.n_models = n_models
@@ -38,11 +41,27 @@ class NCPSTrainer:
         self.model_config = model_config
         self.n_labelled_examples_per_batch = n_labelled_examples_per_batch
         self.n_epochs = n_epochs
-        self.use_cutmix = use_cutmix
         self.momentum_factor = momentum_factor
         self.trade_off_factor = trade_off_factor
         self.pseudo_label_confidence_threshold = pseudo_label_confidence_threshold
         self.device = device
+        self.use_cutmix = use_cutmix
+        if use_linear_momentum_scheduler:
+            self.momentum_factor = 0.5
+            self.momentum_factor_step = (0.95-0.5) / n_epochs
+        else:
+            self.momentum_factor_step = None
+        if use_linear_threshold_scheduler is not None:
+            self.threshold_step = (0.95-0.7) / n_epochs
+            self.threshold_scheduler_type = use_linear_threshold_scheduler
+            if use_linear_threshold_scheduler == 'increase':
+                self.pseudo_label_confidence_threshold = 0.7
+            elif use_linear_threshold_scheduler == 'decrease':
+                self.pseudo_label_confidence_threshold = 0.9
+            else:
+                raise ValueError()
+        else:
+            self.threshold_step = None
 
         for _ in range(self.n_models):
             if checkpoint_path is not None:
@@ -55,9 +74,8 @@ class NCPSTrainer:
         if momentum_factor > 0:
             self.use_momentum = True
             self.teachers = []
-            for _ in range(self.n_models):
-                model = self._register_model()
-                self.teachers.append(model.to(self.device))
+            for i in range(self.n_models):
+                self.teachers.append(copy.deepcopy(self.models[i]))
 
         if checkpoint_path is not None:
             self.load_from_checkpoint(checkpoint_path)
@@ -206,14 +224,12 @@ class NCPSTrainer:
                     Y = Y.to(self.device)
 
                     # generate pseudo-labels
-                    P_L = self._generate_pseudo_labels(x_L)
                     P_m = self._generate_pseudo_labels(x_m)
                     P_U_1 = self._generate_pseudo_labels(x_U_1)
                     P_U_2 = self._generate_pseudo_labels(x_U_2)
                     M = M.expand(P_m.shape[:-1])
                     
                     if self.use_momentum:
-                        t_P_L = self._generate_teacher_pseudo_labels(x_L)
                         t_P_U_1 = self._generate_teacher_pseudo_labels(x_U_1)
                         t_P_U_2 = self._generate_teacher_pseudo_labels(x_U_2)
 
@@ -226,7 +242,6 @@ class NCPSTrainer:
                             preds_m=P_m, 
                             targets=Y, 
                             M=M,
-                            t_preds_L=t_P_L,
                             t_preds_U_1=t_P_U_1,
                             t_preds_U_2=t_P_U_2,
                         )
@@ -265,7 +280,6 @@ class NCPSTrainer:
                     P_L = self._generate_pseudo_labels(x_L)
                     P_U = self._generate_pseudo_labels(x_U)
                     if self.use_momentum:
-                        t_P_L = self._generate_teacher_pseudo_labels(x_L)
                         t_P_U = self._generate_teacher_pseudo_labels(x_U)
 
                     # compute loss
@@ -274,7 +288,6 @@ class NCPSTrainer:
                             preds_L=P_L, 
                             preds_U=P_U, 
                             targets=Y, 
-                            t_preds_L=t_P_L,
                             t_preds_U=t_P_U,
                         )
                     else:
@@ -303,7 +316,7 @@ class NCPSTrainer:
                 self.schedulers[i].step()
 
             if val_dataset is not None:
-                info = f"======= Evaluate on CVC-300 =======\n{self.evaluate(val_dataset)}"
+                info = f"======= Evaluate on ETIS =======\n{self.evaluate(val_dataset)}"
                 print(info)
                 if logging:
                     with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
@@ -316,6 +329,15 @@ class NCPSTrainer:
                     with open(os.path.join(out_dir, 'log.txt'), 'a+') as log:
                         log.write(info+'\n')
                 self.save(out_dir)
+
+            if self.threshold_step is not None:
+                if self.threshold_scheduler_type == 'increase':
+                    self.pseudo_label_confidence_threshold += self.threshold_step
+                else:
+                    self.pseudo_label_confidence_threshold -= self.threshold_step
+
+            if self.momentum_factor_step is not None:
+                self.momentum_factor += self.momentum_factor_step
 
     def evaluate(self, val_dataset, logging_dir=None, dataset_alias=None, mode='soft_voting'):
         val_dataloader = DataLoader(dataset=val_dataset, batch_size=1)
@@ -368,7 +390,13 @@ class NCPSTrainer:
                             preds += _preds
                 if self.model_type == "transformers":
                     preds = F.interpolate(preds, scale_factor=4, mode='bilinear')
+    
+                if preds.shape != Y.shape:
+                    original_size = list(Y.squeeze().shape)
+                    preds = F.interpolate(preds, size=original_size, mode='bilinear')
+                
                 preds = torch.argmax(preds, dim=1).squeeze()
+                
                 iou.append(compute_iou(preds, Y))
                 dice.append(compute_dice(preds, Y))
             mIoU = np.mean(iou)
@@ -381,6 +409,7 @@ class NCPSTrainer:
             with open(os.path.join(logging_dir, 'log.txt'), 'a+') as log:
                 log.write(info+'\n')
         
+
         return {
             "mIoU": mIoU,
             "mDice": mDice
