@@ -1,6 +1,4 @@
-# Cross-pseudo Supervised Trasnformer-based Neural Networks for Colorectal Polyp Segmentation
-
-This project is under my graduation thesis at Hanoi University of Science and Technology, and only for research/educational purposes.
+# nCPS++: A Cross-pseudo Supervised Transformer-based Neural Networks for Colorectal Polyp Semantic Segmentation
 
 ## Requirements
 
